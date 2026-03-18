@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
-from typing import List, Tuple, Dict, Optional
+from typing import Dict, List, Optional, Set, Tuple
 
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
@@ -233,8 +233,8 @@ def detect_simple_breaks(
     """简单突破示例：中枢上沿突破为 BUY，下沿跌破为 SELL（每个中枢只取首个）。"""
     buys: List[Dict[str, object]] = []
     sells: List[Dict[str, object]] = []
-    recorded_buy_zhongshu_indices: set[int] = set()
-    recorded_sell_zhongshu_indices: set[int] = set()
+    recorded_buy_zhongshu_indices: Set[int] = set()
+    recorded_sell_zhongshu_indices: Set[int] = set()
 
     closes = df["Close"].values
     for zh in zhongshus:
