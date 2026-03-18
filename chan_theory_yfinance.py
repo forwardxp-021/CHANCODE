@@ -64,15 +64,15 @@ class Zhongshu:
     high: float
 
 
-def fetch_ohlcv(ticker: str, period: str, interval: str, demo: bool = False) -> pd.DataFrame:
+def fetch_ohlcv(ticker: str, period: str, interval: str, use_demo_data: bool = False) -> pd.DataFrame:
     """使用 yfinance 下载 OHLCV 数据，或使用内置 demo 数据。
 
     :param ticker: 股票代码
     :param period: 下载周期（传给 yfinance）
     :param interval: K 线周期
-    :param demo: 是否使用内置演示数据
+    :param use_demo_data: 是否使用内置演示数据
     """
-    if demo:
+    if use_demo_data:
         # 内置 demo 数据，方便在无网络环境快速演示
         dates = pd.date_range(end=pd.Timestamp.today(), periods=30, freq="D")
         base = np.linspace(100, 110, num=30) + np.sin(np.linspace(0, 3, num=30)) * 3
@@ -98,7 +98,9 @@ def fetch_ohlcv(ticker: str, period: str, interval: str, demo: bool = False) -> 
 
     df = yf.download(ticker, period=period, interval=interval, progress=False)
     if df.empty:
-        raise ValueError("未下载到数据，请检查网络或参数。")
+        raise ValueError(
+            f"未下载到数据：ticker={ticker}, period={period}, interval={interval}，请检查网络或参数。"
+        )
     df = df.dropna()
     print(f"Downloaded {len(df)} rows for {ticker}.")
     return df
@@ -339,7 +341,7 @@ def main() -> None:
     args = parser.parse_args()
 
     try:
-        df = fetch_ohlcv(args.ticker, args.period, args.interval, demo=args.demo)
+        df = fetch_ohlcv(args.ticker, args.period, args.interval, use_demo_data=args.demo)
         fractals_raw = detect_fractals(df)
         fractals = filter_and_alternate_fractals(fractals_raw)
         pens = build_pens(fractals)
@@ -354,7 +356,7 @@ def main() -> None:
     except KeyboardInterrupt:
         print("用户主动中断，已退出。")
         raise
-    except Exception as exc:  # noqa: BLE001
+    except (ValueError, RuntimeError, ConnectionError) as exc:
         print(f"运行出错：{exc}")
         raise SystemExit(1) from exc
 
