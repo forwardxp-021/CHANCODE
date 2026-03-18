@@ -233,20 +233,24 @@ def detect_simple_breaks(
     """简单突破示例：中枢上沿突破为 BUY，下沿跌破为 SELL（每个中枢只取首个）。"""
     buys: List[Dict[str, object]] = []
     sells: List[Dict[str, object]] = []
+    recorded_buy_idx: set[int] = set()
+    recorded_sell_idx: set[int] = set()
 
     closes = df["Close"].values
     for zh in zhongshus:
         start = zh.end_idx + 1
         if start >= len(df):
             continue
-        for i in range(start + 1, len(df)):
+        for i in range(start, len(df)):
             prev_close, curr_close = closes[i - 1], closes[i]
             dt = df.index[i]
-            if prev_close <= zh.high and curr_close > zh.high and not any(b["zh_idx"] == zh.start_idx for b in buys):
+            if prev_close <= zh.high and curr_close > zh.high and zh.start_idx not in recorded_buy_idx:
                 buys.append({"idx": i, "datetime": dt, "price": curr_close, "zh_idx": zh.start_idx})
+                recorded_buy_idx.add(zh.start_idx)
                 break
-            if prev_close >= zh.low and curr_close < zh.low and not any(s["zh_idx"] == zh.start_idx for s in sells):
+            if prev_close >= zh.low and curr_close < zh.low and zh.start_idx not in recorded_sell_idx:
                 sells.append({"idx": i, "datetime": dt, "price": curr_close, "zh_idx": zh.start_idx})
+                recorded_sell_idx.add(zh.start_idx)
                 break
 
     print(f"Detected {len(buys)} buys, {len(sells)} sells.")
