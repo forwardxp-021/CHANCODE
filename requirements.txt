@@ -1,3 +1,4 @@
+# requirements.txt - Chan Theory Visualization Demo (Author: GitHub Copilot Agent)
 yfinance==1.2.0
 pandas==3.0.1
 numpy==2.4.3

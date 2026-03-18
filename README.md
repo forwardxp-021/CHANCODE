@@ -1,4 +1,5 @@
 # Chan Theory Visualization Demo
+_Author: GitHub Copilot Agent_
 
 生成并可视化缠论分型、笔与中枢的示例脚本。
 
