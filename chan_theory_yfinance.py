@@ -213,10 +213,7 @@ def detect_zhongshu(pens: List[Pen]) -> List[Zhongshu]:
         if previous_overlap:
             # 合并重叠中枢：价格取交集，时间延长
             last = zhongshus[-1]
-            merged_low, merged_high = _range_overlap([(last.low, last.high), (candidate.low, candidate.high)]) or (
-                min(last.low, candidate.low),
-                max(last.high, candidate.high),
-            )
+            merged_low, merged_high = previous_overlap
             last.end_idx = candidate.end_idx
             last.end_datetime = candidate.end_datetime
             last.low = merged_low
@@ -286,13 +283,13 @@ def plot_with_annotations(
         ax.scatter(bot_x, bot_y, marker="^", color="green", label="Bottom fractal")
 
     # 绘制笔
-    for pen in pens:
+    for idx, pen in enumerate(pens):
         ax.plot(
             [pen.start_datetime, pen.end_datetime],
             [pen.start_price, pen.end_price],
             color="orange",
             linewidth=1.5,
-            label="Pen" if pen is pens[0] else None,
+            label="Pen" if idx == 0 else None,
         )
 
     # 绘制中枢
@@ -354,6 +351,9 @@ def main() -> None:
             f"zhongshu={len(zhongshus)}, buys={len(buys)}, sells={len(sells)}"
         )
         plot_with_annotations(df, fractals, pens, zhongshus, buys, sells, out=args.out)
+    except KeyboardInterrupt:
+        print("用户主动中断，已退出。")
+        raise
     except Exception as exc:  # noqa: BLE001
         print(f"运行出错：{exc}")
         raise SystemExit(1) from exc
