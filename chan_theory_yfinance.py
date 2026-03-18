@@ -76,12 +76,12 @@ def fetch_ohlcv(ticker: str, period: str, interval: str, use_demo_data: bool = F
         # 内置 demo 数据，方便在无网络环境快速演示
         dates = pd.date_range(end=pd.Timestamp.today(), periods=30, freq="D")
         base = np.linspace(100, 110, num=30) + np.sin(np.linspace(0, 3, num=30)) * 3
-        noise = np.random.default_rng(42).normal(0, 1.5, size=30)
-        close = base + noise
-        open_ = close + np.random.default_rng(1).normal(0, 0.8, size=30)
-        high = np.maximum(open_, close) + np.abs(np.random.default_rng(2).normal(0, 1, size=30))
-        low = np.minimum(open_, close) - np.abs(np.random.default_rng(3).normal(0, 1, size=30))
-        volume = np.random.default_rng(4).integers(1e5, 5e5, size=30)
+        rng = np.random.default_rng(42)
+        close = base + rng.normal(0, 1.5, size=30)
+        open_ = close + rng.normal(0, 0.8, size=30)
+        high = np.maximum(open_, close) + np.abs(rng.normal(0, 1, size=30))
+        low = np.minimum(open_, close) - np.abs(rng.normal(0, 1, size=30))
+        volume = rng.integers(1e5, 5e5, size=30)
         df = pd.DataFrame(
             {
                 "Open": open_,
@@ -233,8 +233,8 @@ def detect_simple_breaks(
     """简单突破示例：中枢上沿突破为 BUY，下沿跌破为 SELL（每个中枢只取首个）。"""
     buys: List[Dict[str, object]] = []
     sells: List[Dict[str, object]] = []
-    recorded_buy_idx: set[int] = set()
-    recorded_sell_idx: set[int] = set()
+    recorded_buy_zhongshu: set[int] = set()
+    recorded_sell_zhongshu: set[int] = set()
 
     closes = df["Close"].values
     for zh in zhongshus:
@@ -244,13 +244,13 @@ def detect_simple_breaks(
         for i in range(start, len(df)):
             prev_close, curr_close = closes[i - 1], closes[i]
             dt = df.index[i]
-            if prev_close <= zh.high and curr_close > zh.high and zh.start_idx not in recorded_buy_idx:
+            if prev_close <= zh.high and curr_close > zh.high and zh.start_idx not in recorded_buy_zhongshu:
                 buys.append({"idx": i, "datetime": dt, "price": curr_close, "zh_idx": zh.start_idx})
-                recorded_buy_idx.add(zh.start_idx)
+                recorded_buy_zhongshu.add(zh.start_idx)
                 break
-            if prev_close >= zh.low and curr_close < zh.low and zh.start_idx not in recorded_sell_idx:
+            if prev_close >= zh.low and curr_close < zh.low and zh.start_idx not in recorded_sell_zhongshu:
                 sells.append({"idx": i, "datetime": dt, "price": curr_close, "zh_idx": zh.start_idx})
-                recorded_sell_idx.add(zh.start_idx)
+                recorded_sell_zhongshu.add(zh.start_idx)
                 break
 
     print(f"Detected {len(buys)} buys, {len(sells)} sells.")
