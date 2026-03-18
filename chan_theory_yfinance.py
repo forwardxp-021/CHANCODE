@@ -205,7 +205,12 @@ def detect_zhongshu(pens: List[Pen]) -> List[Zhongshu]:
             low=low,
             high=high,
         )
-        if zhongshus and _range_overlap([(zhongshus[-1].low, zhongshus[-1].high), (candidate.low, candidate.high)]):
+        previous_overlap = (
+            _range_overlap([(zhongshus[-1].low, zhongshus[-1].high), (candidate.low, candidate.high)])
+            if zhongshus
+            else None
+        )
+        if previous_overlap:
             # 合并重叠中枢：价格取交集，时间延长
             last = zhongshus[-1]
             merged_low, merged_high = _range_overlap([(last.low, last.high), (candidate.low, candidate.high)]) or (
@@ -351,7 +356,7 @@ def main() -> None:
         plot_with_annotations(df, fractals, pens, zhongshus, buys, sells, out=args.out)
     except Exception as exc:  # noqa: BLE001
         print(f"运行出错：{exc}")
-        raise
+        raise SystemExit(1) from exc
 
 
 if __name__ == "__main__":
