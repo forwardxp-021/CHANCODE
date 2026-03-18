@@ -237,21 +237,30 @@ def detect_simple_breaks(
     recorded_sell_zhongshu_indices: Set[int] = set()
 
     closes = df["Close"].values
-    for zh in zhongshus:
+    prev_close_arr = closes[:-1]
+    curr_close_arr = closes[1:]
+    transition_indices = np.arange(1, len(df))
+
+    for zh_id, zh in enumerate(zhongshus):
         start = zh.end_idx + 1
         if start >= len(df):
             continue
-        for i in range(start, len(df)):
-            prev_close, curr_close = closes[i - 1], closes[i]
-            dt = df.index[i]
-            if prev_close <= zh.high and curr_close > zh.high and zh.start_idx not in recorded_buy_zhongshu_indices:
-                buys.append({"idx": i, "datetime": dt, "price": curr_close, "zh_idx": zh.start_idx})
-                recorded_buy_zhongshu_indices.add(zh.start_idx)
-                break
-            if prev_close >= zh.low and curr_close < zh.low and zh.start_idx not in recorded_sell_zhongshu_indices:
-                sells.append({"idx": i, "datetime": dt, "price": curr_close, "zh_idx": zh.start_idx})
-                recorded_sell_zhongshu_indices.add(zh.start_idx)
-                break
+        eligible = transition_indices >= start
+        buy_mask = eligible & (prev_close_arr <= zh.high) & (curr_close_arr > zh.high)
+        sell_mask = eligible & (prev_close_arr >= zh.low) & (curr_close_arr < zh.low)
+
+        buy_candidates = transition_indices[buy_mask]
+        sell_candidates = transition_indices[sell_mask]
+
+        if buy_candidates.size and zh_id not in recorded_buy_zhongshu_indices:
+            idx = int(buy_candidates[0])
+            buys.append({"idx": idx, "datetime": df.index[idx], "price": closes[idx], "zh_idx": zh_id})
+            recorded_buy_zhongshu_indices.add(zh_id)
+
+        if sell_candidates.size and zh_id not in recorded_sell_zhongshu_indices:
+            idx = int(sell_candidates[0])
+            sells.append({"idx": idx, "datetime": df.index[idx], "price": closes[idx], "zh_idx": zh_id})
+            recorded_sell_zhongshu_indices.add(zh_id)
 
     print(f"Detected {len(buys)} buys, {len(sells)} sells.")
     return buys, sells
