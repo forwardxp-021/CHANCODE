@@ -1,6 +1,7 @@
-# requirements.txt - Chan Theory Visualization Demo (Author: GitHub Copilot Agent)
+# requirements.txt – ChanCode 缠论量化分析系统依赖
 yfinance==1.2.0
 pandas==3.0.1
 numpy==2.4.3
 matplotlib==3.10.8
 mplfinance==0.12.10b0
+pytest==8.3.5
