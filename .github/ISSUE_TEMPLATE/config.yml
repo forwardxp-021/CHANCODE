@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: "📖 Issue Workflow Guide"
+    url: "https://github.com/forwardxp-021/CHANCODE/blob/main/docs/issue-workflow.md"
+    about: "Read the guide to understand how to use Epic / Feature / Task / Bug templates."
+  - name: "💬 General Questions"
+    url: "https://github.com/forwardxp-021/CHANCODE/issues"
+    about: "For open-ended questions, browse existing issues or open a new one using a template."
