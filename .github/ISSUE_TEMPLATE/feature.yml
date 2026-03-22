@@ -1,0 +1,74 @@
+name: "Feature"
+description: "A user-facing or system capability that delivers value and can be shipped independently."
+title: "[FEAT] "
+labels: ["type:feature"]
+body:
+  - type: input
+    id: epic_link
+    attributes:
+      label: Parent Epic (optional)
+      description: "Paste the Epic issue URL or number."
+      placeholder: "#123 or https://github.com/forwardxp-021/CHANCODE/issues/123"
+    validations:
+      required: false
+
+  - type: textarea
+    id: user_story
+    attributes:
+      label: User Story
+      description: "As a <user>, I want <capability>, so that <benefit>."
+      placeholder: "As a ..., I want ..., so that ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: "What is in scope and what is explicitly out of scope."
+      value: |
+        **In scope**
+        - 
+
+        **Out of scope**
+        - 
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: Acceptance Criteria
+      description: "Verifiable checklist. Prefer testable, observable statements."
+      value: |
+        - [ ] 
+        - [ ] 
+    validations:
+      required: true
+
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraints
+      description: "Tech stack, compatibility, performance requirements, security, deadlines."
+    validations:
+      required: false
+
+  - type: textarea
+    id: implementation_notes
+    attributes:
+      label: Implementation Notes
+      description: "Suggested approach, API design notes, UI mocks, migration plan, rollout strategy."
+    validations:
+      required: false
+
+  - type: textarea
+    id: task_breakdown
+    attributes:
+      label: Task Breakdown (optional)
+      description: "Link child Task issues here (add as you create them)."
+      value: |
+        - #
+        - #
+    validations:
+      required: false

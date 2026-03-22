@@ -1,0 +1,77 @@
+name: "Epic"
+description: "A large initiative delivered via multiple Features and Tasks."
+title: "[EPIC] "
+labels: ["type:epic"]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: "What outcome do we want to achieve? One measurable sentence."
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: "Why are we doing this? Background, problem statement, relevant links."
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: "What is in scope and what is explicitly out of scope."
+      value: |
+        **In scope**
+        - 
+
+        **Out of scope**
+        - 
+    validations:
+      required: true
+
+  - type: textarea
+    id: success_metrics
+    attributes:
+      label: Success Metrics
+      description: "How will we measure success? (e.g., latency < 200 ms, adoption ≥ 80%, error rate < 0.1%)"
+    validations:
+      required: false
+
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: Acceptance Criteria
+      description: "High-level, verifiable completion checklist for this Epic."
+      value: |
+        - [ ] All child Features are identified, linked, and delivered
+        - [ ] Risks & rollout plan are documented
+        - [ ] Success metrics are measured and meet targets
+        - [ ] Definition of Done agreed and signed off
+    validations:
+      required: true
+
+  - type: textarea
+    id: breakdown
+    attributes:
+      label: Planned Breakdown
+      description: "Link child Feature/Task issues here (add as you create them)."
+      value: |
+        Features:
+        - #
+
+        Tasks:
+        - #
+    validations:
+      required: false
+
+  - type: textarea
+    id: risks
+    attributes:
+      label: Risks / Unknowns
+      description: "What might block this? What needs validation or spike investigation?"
+    validations:
+      required: false

@@ -1,0 +1,43 @@
+name: "Task"
+description: "A concrete piece of implementation work completable in a short cycle (hours to 1–2 days)."
+title: "[TASK] "
+labels: ["type:task"]
+body:
+  - type: input
+    id: parent_link
+    attributes:
+      label: Parent Feature / Epic (optional)
+      description: "Link to the parent Feature or Epic issue."
+      placeholder: "#123"
+    validations:
+      required: false
+
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: "What exactly will be implemented or changed?"
+    validations:
+      required: true
+
+  - type: textarea
+    id: definition_of_done
+    attributes:
+      label: Definition of Done
+      description: "Checklist that must be fully checked before this Task can be closed."
+      value: |
+        - [ ] Code implemented and reviewed
+        - [ ] Unit / integration tests added or updated
+        - [ ] CI pipeline passes
+        - [ ] Documentation updated (if applicable)
+        - [ ] PR merged and linked to this issue
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: "Links to specs, edge cases, constraints, or anything else relevant."
+    validations:
+      required: false
