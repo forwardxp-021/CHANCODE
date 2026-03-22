@@ -1,7 +1,7 @@
 """chancode.gui – 基于 tkinter 的缠论图形界面。
 
 界面布局：
-  左侧控制面板  – 参数输入（股票代码、周期、K 线间隔）、分析按钮
+  左侧控制面板  – 参数输入（股票代码、K 线种类下拉菜单）、分析按钮
   右侧图表区域  – 嵌入的 matplotlib 缠论图表
   底部信息栏    – 运行日志 / 买卖点汇总
 
@@ -24,13 +24,21 @@ matplotlib.use("TkAgg")  # 必须在导入 pyplot 之前设置
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
-from chancode.data import fetch_ohlcv
-from chancode.fractal import detect_fractals, filter_and_alternate_fractals
+from chancode.data import fetch_ohlcv_cached, DEFAULT_NUM_PERIODS
+from chancode.fractal import detect_fractals, filter_and_alternate_fractals, merge_klines
 from chancode.bi import build_pens
 from chancode.xd import build_segments
 from chancode.zs import detect_zhongshu
 from chancode.signal import detect_buy_sell_points
 from chancode.chart import plot_chan
+
+# K 线种类选项：显示名称 → yfinance interval 代码
+_INTERVAL_OPTIONS: dict[str, str] = {
+    "5分钟":  "5m",
+    "30分钟": "30m",
+    "日线":   "1d",
+    "周线":   "1wk",
+}
 
 
 class ChanApp(tk.Tk):
@@ -77,17 +85,27 @@ class ChanApp(tk.Tk):
         form = ttk.Frame(parent, padding=8)
         form.pack(fill=tk.X)
 
-        fields = [
-            ("股票代码", "AAPL"),
-            ("下载周期", "1y"),
-            ("K 线间隔", "1d"),
-        ]
-        self._vars: dict[str, tk.StringVar] = {}
-        for label, default in fields:
-            ttk.Label(form, text=label).pack(anchor=tk.W, pady=(6, 0))
-            var = tk.StringVar(value=default)
-            self._vars[label] = var
-            ttk.Entry(form, textvariable=var).pack(fill=tk.X)
+        # 股票代码输入框
+        ttk.Label(form, text="股票代码").pack(anchor=tk.W, pady=(6, 0))
+        self._ticker_var = tk.StringVar(value="AAPL")
+        ttk.Entry(form, textvariable=self._ticker_var).pack(fill=tk.X)
+
+        # K 线种类下拉菜单
+        ttk.Label(form, text="K 线种类").pack(anchor=tk.W, pady=(10, 0))
+        self._interval_label_var = tk.StringVar(value="日线")
+        interval_combo = ttk.Combobox(
+            form,
+            textvariable=self._interval_label_var,
+            values=list(_INTERVAL_OPTIONS.keys()),
+            state="readonly",
+            width=16,
+        )
+        interval_combo.pack(fill=tk.X)
+
+        # 下载周期数（默认 120）
+        ttk.Label(form, text=f"下载K线根数（默认 {DEFAULT_NUM_PERIODS}）").pack(anchor=tk.W, pady=(10, 0))
+        self._periods_var = tk.StringVar(value=str(DEFAULT_NUM_PERIODS))
+        ttk.Entry(form, textvariable=self._periods_var).pack(fill=tk.X)
 
         # 演示数据选项
         self._demo_var = tk.BooleanVar(value=False)
@@ -152,16 +170,35 @@ class ChanApp(tk.Tk):
     def _run_analysis(self) -> None:
         """后台执行缠论全流程，完成后更新图表与汇总。"""
         try:
-            ticker = self._vars["股票代码"].get().strip().upper()
-            period = self._vars["下载周期"].get().strip()
-            interval = self._vars["K 线间隔"].get().strip()
+            ticker = self._ticker_var.get().strip().upper()
+            interval_label = self._interval_label_var.get().strip()
+            interval = _INTERVAL_OPTIONS.get(interval_label, "1d")
             demo = self._demo_var.get()
 
-            self._log_append(f"下载数据：{ticker}  period={period}  interval={interval}\n")
-            df = fetch_ohlcv(ticker, period, interval, use_demo_data=demo)
+            try:
+                num_periods = int(self._periods_var.get().strip())
+            except ValueError:
+                num_periods = DEFAULT_NUM_PERIODS
+
+            self._log_append(
+                f"下载数据：{ticker}  K线={interval_label}({interval})"
+                f"  周期数={num_periods}\n"
+            )
+
+            df = fetch_ohlcv_cached(
+                ticker, interval, num_periods=num_periods, use_demo_data=demo
+            )
             self._log_append(f"数据行数：{len(df)}\n")
 
-            raw = detect_fractals(df)
+            # K 线合并处理
+            merged_df, merged_indices = merge_klines(df)
+            self._log_append(
+                f"K线合并：{len(df)} → {len(merged_df)} 根"
+                f"（{len(merged_indices)} 个原始K线参与合并）\n"
+            )
+
+            # 在合并后的 K 线上做分型分析
+            raw = detect_fractals(merged_df)
             fractals = filter_and_alternate_fractals(raw)
             self._log_append(f"分型：{len(fractals)} 个\n")
 
@@ -174,12 +211,14 @@ class ChanApp(tk.Tk):
             zhongshus = detect_zhongshu(pens)
             self._log_append(f"中枢：{len(zhongshus)} 个\n")
 
-            buys, sells = detect_buy_sell_points(df, zhongshus)
+            buys, sells = detect_buy_sell_points(merged_df, zhongshus)
             self._log_append(f"买点：{len(buys)} 个，卖点：{len(sells)} 个\n")
 
-            title = f"{ticker}  {period}/{interval}"
-            fig = plot_chan(df, fractals, pens, segments, zhongshus, buys, sells,
-                            title=title, out=None)
+            title = f"{ticker}  {interval_label}  （{len(df)} 根）"
+            fig = plot_chan(
+                df, fractals, pens, segments, zhongshus, buys, sells,
+                title=title, out=None, merged_indices=merged_indices
+            )
 
             # 在主线程中更新 UI
             self.after(0, lambda: self._update_chart(fig))

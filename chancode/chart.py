@@ -36,6 +36,49 @@ _BS_STYLE: Dict[str, Dict] = {
 }
 
 
+def _highlight_merged_klines(
+    ax: plt.Axes,
+    df: pd.DataFrame,
+    merged_indices: set,
+) -> None:
+    """在 K 线图上用浅黄色背景标注参与合并的 K 线所在时间位置。
+
+    mplfinance 使用整数位置作为 x 轴，因此用 axvspan 按位置范围高亮。
+
+    :param ax: matplotlib 坐标轴
+    :param df: 原始 OHLCV DataFrame（行数与 x 轴刻度一一对应）
+    :param merged_indices: 参与合并的行整数位置集合
+    """
+    if not merged_indices:
+        return
+
+    # 将连续的合并位置聚合为区间以减少绘制次数
+    sorted_pos = sorted(merged_indices)
+    spans: List[tuple] = []
+    start = sorted_pos[0]
+    end = sorted_pos[0]
+    for pos in sorted_pos[1:]:
+        if pos == end + 1:
+            end = pos
+        else:
+            spans.append((start, end))
+            start = pos
+            end = pos
+    spans.append((start, end))
+
+    label_added = False
+    for x0, x1 in spans:
+        ax.axvspan(
+            x0 - 0.4,
+            x1 + 0.4,
+            color="gold",
+            alpha=0.25,
+            zorder=1,
+            label="合并K线" if not label_added else None,
+        )
+        label_added = True
+
+
 def plot_chan(
     df: pd.DataFrame,
     fractals: List[FractalPoint],
@@ -47,6 +90,7 @@ def plot_chan(
     title: str = "缠论图表",
     out: Optional[str] = None,
     figsize: tuple = (14, 9),
+    merged_indices: Optional[set] = None,
 ) -> plt.Figure:
     """绘制完整的缠论分析图。
 
@@ -60,6 +104,7 @@ def plot_chan(
     :param title: 图表标题
     :param out: 输出图片路径；为 None 时弹窗显示
     :param figsize: 图表尺寸
+    :param merged_indices: 原始 df 中参与合并的行位置集合（整数），用于在图中高亮显示
     :returns: matplotlib Figure 对象
     """
     fig, axes = mpf.plot(
@@ -72,6 +117,10 @@ def plot_chan(
         show_nontrading=False,
     )
     ax: plt.Axes = axes[0]
+
+    # ── 合并 K 线高亮 ─────────────────────────────────────────
+    if merged_indices:
+        _highlight_merged_klines(ax, df, merged_indices)
 
     # ── 分型 ──────────────────────────────────────────────────
     top_x = [f.datetime for f in fractals if f.ftype == "top"]
