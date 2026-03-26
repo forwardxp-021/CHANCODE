@@ -1,31 +1,29 @@
-"""chancode.chart – 可视化。
+"""chancode.chart - visualization.
 
-使用 mplfinance + matplotlib 绘制缠论全要素图表：
-  - K 线蜡烛图
-  - 分型标注（顶/底三角）
-  - 笔（橙色折线）
-  - 线段（蓝色粗线）
-  - 中枢（半透明矩形区域）
-  - 买卖点（彩色标记与标签）
+Use mplfinance + matplotlib to draw chart elements:
+    - Candlesticks
+    - Fractal markers
+    - Pens
+    - Segments
+    - Centers (overlap zones)
+    - Buy/Sell points
 """
 from __future__ import annotations
 
 from typing import Dict, List, Optional
 
-import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
-from matplotlib.lines import Line2D
 from matplotlib.patches import Rectangle
 import mplfinance as mpf
 import pandas as pd
 
-from chancode.fractal import FractalPoint
+from chancode.fractal import FractalPoint, MergedKlineBox
 from chancode.bi import Pen
 from chancode.xd import Segment
 from chancode.zs import Zhongshu
 from chancode.signal import BuySellPoint
 
-# 买卖点配色
+# Buy/Sell point style
 _BS_STYLE: Dict[str, Dict] = {
     "B1": {"color": "lime",    "marker": "^", "zorder": 6},
     "B2": {"color": "green",   "marker": "^", "zorder": 6},
@@ -36,46 +34,46 @@ _BS_STYLE: Dict[str, Dict] = {
 }
 
 
-def _highlight_merged_klines(
+def _build_pos_map(df: pd.DataFrame) -> Dict[pd.Timestamp, int]:
+    """构建时间戳到 mplfinance x 轴整数位置的映射。"""
+    return {pd.Timestamp(dt): i for i, dt in enumerate(df.index)}
+
+
+def _x_of(dt: pd.Timestamp, pos_map: Dict[pd.Timestamp, int], fallback: int) -> int:
+    """将时间戳映射为 x 轴整数位置；缺失时回退到给定索引。"""
+    return pos_map.get(pd.Timestamp(dt), fallback)
+
+
+def _draw_merged_kline_boxes(
     ax: plt.Axes,
-    df: pd.DataFrame,
-    merged_indices: set,
+    merged_boxes: List[MergedKlineBox],
 ) -> None:
-    """在 K 线图上用浅黄色背景标注参与合并的 K 线所在时间位置。
-
-    mplfinance 使用整数位置作为 x 轴，因此用 axvspan 按位置范围高亮。
-
-    :param ax: matplotlib 坐标轴
-    :param df: 原始 OHLCV DataFrame（行数与 x 轴刻度一一对应）
-    :param merged_indices: 参与合并的行整数位置集合
-    """
-    if not merged_indices:
+    """Draw a rectangle for each merged K-line group on the candle chart."""
+    if not merged_boxes:
         return
 
-    # 将连续的合并位置聚合为区间以减少绘制次数
-    sorted_pos = sorted(merged_indices)
-    spans: List[tuple] = []
-    start = sorted_pos[0]
-    end = sorted_pos[0]
-    for pos in sorted_pos[1:]:
-        if pos == end + 1:
-            end = pos
-        else:
-            spans.append((start, end))
-            start = pos
-            end = pos
-    spans.append((start, end))
-
     label_added = False
-    for x0, x1 in spans:
-        ax.axvspan(
-            x0 - 0.4,
-            x1 + 0.4,
-            color="gold",
-            alpha=0.25,
-            zorder=1,
-            label="合并K线" if not label_added else None,
+    for box in merged_boxes:
+        left = box.start_pos - 0.5
+        width = box.end_pos - box.start_pos + 1.0
+        height = box.high - box.low
+
+        if height <= 0:
+            continue
+
+        rect = Rectangle(
+            (left, box.low),
+            width,
+            height,
+            facecolor="none",
+            edgecolor="goldenrod",
+            linestyle="-",
+            linewidth=1.2,
+            alpha=0.9,
+            zorder=4,
+            label="Merged K Box" if not label_added else None,
         )
+        ax.add_patch(rect)
         label_added = True
 
 
@@ -87,10 +85,11 @@ def plot_chan(
     zhongshus: List[Zhongshu],
     buys: List[BuySellPoint],
     sells: List[BuySellPoint],
-    title: str = "缠论图表",
+    title: str = "Chan Chart",
     out: Optional[str] = None,
     figsize: tuple = (14, 9),
     merged_indices: Optional[set] = None,
+    merged_boxes: Optional[List[MergedKlineBox]] = None,
 ) -> plt.Figure:
     """绘制完整的缠论分析图。
 
@@ -104,7 +103,8 @@ def plot_chan(
     :param title: 图表标题
     :param out: 输出图片路径；为 None 时弹窗显示
     :param figsize: 图表尺寸
-    :param merged_indices: 原始 df 中参与合并的行位置集合（整数），用于在图中高亮显示
+    :param merged_indices: 原始 df 中参与合并的行位置集合（整数）
+    :param merged_boxes: 包含关系分组方框信息（优先使用）
     :returns: matplotlib Figure 对象
     """
     fig, axes = mpf.plot(
@@ -117,48 +117,56 @@ def plot_chan(
         show_nontrading=False,
     )
     ax: plt.Axes = axes[0]
+    pos_map = _build_pos_map(df)
 
-    # ── 合并 K 线高亮 ─────────────────────────────────────────
-    if merged_indices:
-        _highlight_merged_klines(ax, df, merged_indices)
+    # ── 合并 K 线显示 ─────────────────────────────────────────
+    if merged_boxes:
+        _draw_merged_kline_boxes(ax, merged_boxes)
+    elif merged_indices:
+        # backward compatibility: no grouped box metadata available
+        pass
 
     # ── 分型 ──────────────────────────────────────────────────
-    top_x = [f.datetime for f in fractals if f.ftype == "top"]
+    top_x = [_x_of(f.datetime, pos_map, f.idx) for f in fractals if f.ftype == "top"]
     top_y = [f.high for f in fractals if f.ftype == "top"]
-    bot_x = [f.datetime for f in fractals if f.ftype == "bottom"]
+    bot_x = [_x_of(f.datetime, pos_map, f.idx) for f in fractals if f.ftype == "bottom"]
     bot_y = [f.low for f in fractals if f.ftype == "bottom"]
     if top_x:
-        ax.scatter(top_x, top_y, marker="v", color="red", s=40, zorder=5, label="顶分型")
+        ax.scatter(top_x, top_y, marker="v", color="red", s=40, zorder=5, label="Top Fractal")
     if bot_x:
-        ax.scatter(bot_x, bot_y, marker="^", color="green", s=40, zorder=5, label="底分型")
+        ax.scatter(bot_x, bot_y, marker="^", color="green", s=40, zorder=5, label="Bottom Fractal")
 
     # ── 笔 ───────────────────────────────────────────────────
     for idx, pen in enumerate(pens):
+        x0 = _x_of(pen.start_datetime, pos_map, pen.start_idx)
+        x1 = _x_of(pen.end_datetime, pos_map, pen.end_idx)
         ax.plot(
-            [pen.start_datetime, pen.end_datetime],
+            [x0, x1],
             [pen.start_price, pen.end_price],
             color="orange",
             linewidth=1.2,
             alpha=0.8,
-            label="笔" if idx == 0 else None,
+            label="Pen" if idx == 0 else None,
         )
 
     # ── 线段 ─────────────────────────────────────────────────
     for idx, seg in enumerate(segments):
         color = "royalblue" if seg.is_up else "salmon"
+        x0 = _x_of(seg.start_datetime, pos_map, seg.start_idx)
+        x1 = _x_of(seg.end_datetime, pos_map, seg.end_idx)
         ax.plot(
-            [seg.start_datetime, seg.end_datetime],
+            [x0, x1],
             [seg.start_price, seg.end_price],
             color=color,
             linewidth=2.5,
             alpha=0.85,
-            label="线段(上)" if (idx == 0 and seg.is_up) else ("线段(下)" if (idx == 0 and not seg.is_up) else None),
+            label="Segment (Up)" if (idx == 0 and seg.is_up) else ("Segment (Down)" if (idx == 0 and not seg.is_up) else None),
         )
 
     # ── 中枢 ─────────────────────────────────────────────────
     for idx, zh in enumerate(zhongshus):
-        x0 = mdates.date2num(zh.start_datetime)
-        x1 = mdates.date2num(zh.end_datetime)
+        x0 = _x_of(zh.start_datetime, pos_map, zh.start_idx)
+        x1 = _x_of(zh.end_datetime, pos_map, zh.end_idx)
         rect = Rectangle(
             (x0, zh.low),
             x1 - x0,
@@ -168,13 +176,13 @@ def plot_chan(
             edgecolor="purple",
             linestyle="--",
             linewidth=1.2,
-            label="中枢" if idx == 0 else None,
+            label="Center" if idx == 0 else None,
         )
         ax.add_patch(rect)
         ax.hlines(
             [zh.low, zh.high],
-            xmin=zh.start_datetime,
-            xmax=zh.end_datetime,
+            xmin=x0,
+            xmax=x1,
             colors="purple",
             linestyles="dashed",
             linewidth=0.8,
@@ -183,11 +191,12 @@ def plot_chan(
     # ── 买卖点 ───────────────────────────────────────────────
     for pt in buys:
         style = _BS_STYLE[pt.bstype]
-        ax.scatter(pt.datetime, pt.price, marker=style["marker"], color=style["color"],
+        x = _x_of(pt.datetime, pos_map, pt.idx)
+        ax.scatter(x, pt.price, marker=style["marker"], color=style["color"],
                    s=80, zorder=style["zorder"])
         ax.annotate(
             pt.bstype,
-            xy=(pt.datetime, pt.price),
+            xy=(x, pt.price),
             xytext=(0, 10),
             textcoords="offset points",
             color=style["color"],
@@ -197,11 +206,12 @@ def plot_chan(
 
     for pt in sells:
         style = _BS_STYLE[pt.bstype]
-        ax.scatter(pt.datetime, pt.price, marker=style["marker"], color=style["color"],
+        x = _x_of(pt.datetime, pos_map, pt.idx)
+        ax.scatter(x, pt.price, marker=style["marker"], color=style["color"],
                    s=80, zorder=style["zorder"])
         ax.annotate(
             pt.bstype,
-            xy=(pt.datetime, pt.price),
+            xy=(x, pt.price),
             xytext=(0, -14),
             textcoords="offset points",
             color=style["color"],
@@ -215,7 +225,7 @@ def plot_chan(
 
     if out:
         fig.savefig(out, dpi=150, bbox_inches="tight")
-        print(f"[chart] 图表已保存至 {out}")
+        print(f"[chart] Chart saved to {out}")
     else:
         plt.show()
 

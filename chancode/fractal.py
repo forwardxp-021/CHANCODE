@@ -10,7 +10,7 @@ K 线合并规则（缠论标准）：
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Set, Tuple
+from typing import List, Set
 
 import pandas as pd
 
@@ -31,7 +31,43 @@ class FractalPoint:
         return self.high if self.ftype == "top" else self.low
 
 
-def merge_klines(df: pd.DataFrame) -> Tuple[pd.DataFrame, Set[int]]:
+@dataclass
+class MergedKlineBox:
+    """用于显示包含关系的方框信息（基于原始K线位置）。"""
+
+    start_pos: int
+    end_pos: int
+    high: float
+    low: float
+
+
+@dataclass
+class MergeKlineResult:
+    """K线包含处理结果，含映射关系。"""
+
+    merged_df: pd.DataFrame
+    merged_indices: Set[int]
+    merged_boxes: List[MergedKlineBox]
+    merged_to_original: List[List[int]]
+    orig_to_merged_index: List[int]
+
+    def __iter__(self):
+        """兼容旧调用：允许按 3 元组解包。"""
+        yield self.merged_df
+        yield self.merged_indices
+        yield self.merged_boxes
+
+
+def _is_more_extreme(curr: FractalPoint, ref: FractalPoint) -> bool:
+    """同类型分型比较极值强弱。"""
+    if curr.ftype != ref.ftype:
+        return False
+    if curr.ftype == "top":
+        return curr.high > ref.high
+    return curr.low < ref.low
+
+
+def merge_klines(df: pd.DataFrame) -> MergeKlineResult:
     """对原始 K 线序列执行缠论标准包含关系处理（K 线合并）。
 
     当相邻两根 K 线存在包含关系时，将其合并为一根独立 K 线：
@@ -39,9 +75,12 @@ def merge_klines(df: pd.DataFrame) -> Tuple[pd.DataFrame, Set[int]]:
     - 前期下跌趋势：取 min(high)、min(low)。
 
     :param df: 含 Open/High/Low/Close/Volume 列的原始 OHLCV DataFrame
-    :returns: (merged_df, merged_indices)
+    :returns: MergeKlineResult
         - merged_df: 合并后的 K 线 DataFrame（行数 ≤ 原始行数）
-        - merged_indices: 原始 DataFrame 中被"吸收"进合并的行的整数位置集合（不包含合并组的第一行）
+        - merged_indices: 原始 DataFrame 中被"吸收"进合并的行的整数位置集合（不含组首行）
+        - merged_boxes: 每个包含组对应的显示方框（宽度=该组K线宽度，高低=该组最高最低）
+        - merged_to_original: 合并后每根K线对应的原始位置列表
+        - orig_to_merged_index: 每根原始K线对应的合并后K线位置
     """
     highs = df["High"].values
     lows = df["Low"].values
@@ -127,21 +166,58 @@ def merge_klines(df: pd.DataFrame) -> Tuple[pd.DataFrame, Set[int]]:
     for group in group_positions:
         if len(group) > 1:
             merged_indices.update(group[1:])
-            # 也标记首行（整个组都参与了合并）
-            merged_indices.add(group[0])
+
+    merged_boxes: List[MergedKlineBox] = []
+    for group in group_positions:
+        if len(group) <= 1:
+            continue
+        start_pos = group[0]
+        end_pos = group[-1]
+        grp_high = max(float(highs[pos]) for pos in group)
+        grp_low = min(float(lows[pos]) for pos in group)
+        merged_boxes.append(
+            MergedKlineBox(
+                start_pos=start_pos,
+                end_pos=end_pos,
+                high=grp_high,
+                low=grp_low,
+            )
+        )
+
+    orig_to_merged_index = [-1] * len(df)
+    for merged_i, group in enumerate(group_positions):
+        for orig_i in group:
+            orig_to_merged_index[orig_i] = merged_i
 
     print(
         f"[fractal] K线合并：{len(df)} → {len(merged_df)} 根"
         f"（{len(merged_indices)} 个原始K线参与合并）。"
     )
-    return merged_df, merged_indices
+    return MergeKlineResult(
+        merged_df=merged_df,
+        merged_indices=merged_indices,
+        merged_boxes=merged_boxes,
+        merged_to_original=[list(g) for g in group_positions],
+        orig_to_merged_index=orig_to_merged_index,
+    )
 
 
-def detect_fractals(df: pd.DataFrame) -> List[FractalPoint]:
+def detect_fractals(df: pd.DataFrame, allow_equal: bool = True) -> List[FractalPoint]:
     """在 df 中识别三 K 线顶/底分型。
 
-    顶分型：第 i 根 K 线高点严格高于第 i-1 和第 i+1 根 K 线。
-    底分型：第 i 根 K 线低点严格低于第 i-1 和第 i+1 根 K 线。
+        allow_equal=True 时，支持平顶/平底，但要求高低点都满足方向性：
+            顶：
+                ch >= ph and ch >= nh and
+                cl >= pl and cl >= nl and
+                (ch > ph or ch > nh) and
+                (cl > pl or cl > nl)
+            底：
+                ch <= ph and ch <= nh and
+                cl <= pl and cl <= nl and
+                (ch < ph or ch < nh) and
+                (cl < pl or cl < nl)
+
+        allow_equal=False 时使用严格不等号。
     若同时满足（极罕见），按更极端幅度选择类型。
 
     :param df: 含 High/Low 列的 OHLCV DataFrame
@@ -156,8 +232,22 @@ def detect_fractals(df: pd.DataFrame) -> List[FractalPoint]:
         pl, cl, nl = lows[i - 1], lows[i], lows[i + 1]
         dt = df.index[i]
 
-        is_top = ch > ph and ch > nh
-        is_bot = cl < pl and cl < nl
+        if allow_equal:
+            is_top = (
+                ch >= ph and ch >= nh
+                and cl >= pl and cl >= nl
+                and (ch > ph or ch > nh)
+                and (cl > pl or cl > nl)
+            )
+            is_bot = (
+                ch <= ph and ch <= nh
+                and cl <= pl and cl <= nl
+                and (ch < ph or ch < nh)
+                and (cl < pl or cl < nl)
+            )
+        else:
+            is_top = ch > ph and ch > nh and cl > pl and cl > nl
+            is_bot = ch < ph and ch < nh and cl < pl and cl < nl
 
         if is_top and not is_bot:
             fractals.append(FractalPoint(i, dt, "top", ch, cl))
@@ -174,26 +264,190 @@ def detect_fractals(df: pd.DataFrame) -> List[FractalPoint]:
     return fractals
 
 
-def filter_and_alternate_fractals(fractals: List[FractalPoint]) -> List[FractalPoint]:
-    """去重与交替：连续同类分型保留最极端一个，确保顶底严格交替。
+def cluster_fractals_for_display(
+    fractals: List[FractalPoint],
+    near_gap: int = 2,
+) -> List[FractalPoint]:
+    """生成展示用分型序列：尽量保留结构拐点，减少无意义近邻噪声。"""
+    if not fractals:
+        return []
 
-    :param fractals: 原始分型列表
-    :returns: 交替排列的分型列表
+    near_gap = max(1, int(near_gap))
+    ordered = sorted(fractals, key=lambda x: x.idx)
+    clustered: List[FractalPoint] = []
+
+    for f in ordered:
+        if not clustered:
+            clustered.append(f)
+            continue
+
+        last = clustered[-1]
+        if f.ftype == last.ftype:
+            # 同类分型只保留更极端，避免“连续顶部/底部全标记”。
+            if _is_more_extreme(f, last):
+                clustered[-1] = f
+            continue
+
+        # 异类分型过近时优先保留后者，减少一根K线内来回翻转的噪声。
+        if (f.idx - last.idx) < near_gap:
+            clustered[-1] = f
+            continue
+
+        clustered.append(f)
+
+    return clustered
+
+
+def build_fractals_for_bi(
+    fractals: List[FractalPoint],
+    min_separation: int = 3,
+    min_pen_separation: int = 7,
+) -> List[FractalPoint]:
+    """分型去重、交替与有效性约束。
+
+    规则目标：
+    1) 保证顶底交替；
+    2) 抑制过密分型（最小间隔）；
+    3) 与成笔规则协同，优先保留可形成有效笔的分型端点。
     """
     if not fractals:
         return []
 
-    filtered: List[FractalPoint] = [fractals[0]]
-    for f in fractals[1:]:
-        last = filtered[-1]
-        if f.ftype == last.ftype:
-            # 同类型去重：顶取最高，底取最低
-            if f.ftype == "top" and f.high > last.high:
-                filtered[-1] = f
-            elif f.ftype == "bottom" and f.low < last.low:
-                filtered[-1] = f
-        else:
-            filtered.append(f)
+    min_separation = max(1, int(min_separation))
+    min_pen_separation = max(1, int(min_pen_separation))
 
-    print(f"[fractal] 交替后分型 {len(filtered)} 个。")
-    return filtered
+    ordered = sorted(fractals, key=lambda x: x.idx)
+
+    # Pass 1: 连续同类型先取更极端值，得到基础交替序列。
+    alternating: List[FractalPoint] = []
+    for f in ordered:
+        if not alternating:
+            alternating.append(f)
+            continue
+        last = alternating[-1]
+        if f.ftype == last.ftype:
+            if _is_more_extreme(f, last):
+                alternating[-1] = f
+        else:
+            alternating.append(f)
+
+    # Pass 2: 处理过密的异类分型。间距不足时，将其视为噪声反转，
+    # 优先保留同类型里更极端的端点，避免形成短促伪笔。
+    compact: List[FractalPoint] = []
+    for f in alternating:
+        if not compact:
+            compact.append(f)
+            continue
+
+        last = compact[-1]
+        if f.ftype == last.ftype:
+            if _is_more_extreme(f, last):
+                compact[-1] = f
+            continue
+
+        if (f.idx - last.idx) >= min_separation:
+            compact.append(f)
+            continue
+
+        if len(compact) >= 2 and compact[-2].ftype == f.ftype:
+            prev_same = compact[-2]
+            if _is_more_extreme(f, prev_same):
+                compact[-2] = f
+            compact.pop()  # 删除中间的噪声反向分型
+        else:
+            # 序列开头出现过密反向分型时，保留后者可提升后续成笔概率。
+            compact[-1] = f
+
+    # Pass 3: 与成笔最小间距协同，避免留下无法成笔的近邻反转点。
+    final: List[FractalPoint] = []
+    for f in compact:
+        if not final:
+            final.append(f)
+            continue
+
+        last = final[-1]
+        if f.ftype == last.ftype:
+            if _is_more_extreme(f, last):
+                final[-1] = f
+            continue
+
+        if (f.idx - last.idx) >= min_pen_separation:
+            final.append(f)
+            continue
+
+        # 距离不足成笔，尝试替换为更大摆动幅度的端点。
+        if len(final) >= 2 and final[-2].ftype == f.ftype:
+            prev_same = final[-2]
+            old_swing = abs(last.price - prev_same.price)
+            new_swing = abs(f.price - prev_same.price)
+            if new_swing >= old_swing:
+                final[-1] = f
+
+    print(
+        f"[fractal] 交替后分型 {len(final)} 个"
+        f"（min_sep={min_separation}, min_pen_sep={min_pen_separation}）。"
+    )
+    return final
+
+
+def filter_and_alternate_fractals(
+    fractals: List[FractalPoint],
+    min_separation: int = 3,
+    min_pen_separation: int = 7,
+) -> List[FractalPoint]:
+    """兼容旧接口：等价于 build_fractals_for_bi。"""
+    return build_fractals_for_bi(
+        fractals,
+        min_separation=min_separation,
+        min_pen_separation=min_pen_separation,
+    )
+
+
+def map_fractals_to_original(
+    fractals: List[FractalPoint],
+    merge_result: MergeKlineResult,
+    anchor: str = "extreme",
+    original_index: pd.Index | None = None,
+    original_df: pd.DataFrame | None = None,
+) -> List[FractalPoint]:
+    """将 merged_df 上的分型映射到原始K线坐标位置。"""
+    if not fractals:
+        return []
+
+    if original_index is None:
+        original_index = merge_result.merged_df.index
+
+    mapped: List[FractalPoint] = []
+    for f in fractals:
+        if f.idx < 0 or f.idx >= len(merge_result.merged_to_original):
+            continue
+        group = merge_result.merged_to_original[f.idx]
+        if not group:
+            continue
+
+        if anchor == "left":
+            orig_pos = group[0]
+        elif anchor == "middle":
+            orig_pos = group[len(group) // 2]
+        elif anchor == "extreme" and original_df is not None:
+            if f.ftype == "top":
+                orig_pos = max(group, key=lambda x: float(original_df["High"].iloc[x]))
+            else:
+                orig_pos = min(group, key=lambda x: float(original_df["Low"].iloc[x]))
+        else:
+            orig_pos = group[-1]
+
+        if orig_pos < 0 or orig_pos >= len(original_index):
+            continue
+
+        mapped.append(
+            FractalPoint(
+                idx=orig_pos,
+                datetime=original_index[orig_pos],
+                ftype=f.ftype,
+                high=f.high,
+                low=f.low,
+            )
+        )
+
+    return mapped

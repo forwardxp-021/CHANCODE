@@ -14,9 +14,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import List, Tuple
 
-import numpy as np
 import pandas as pd
 
 from chancode.zs import Zhongshu
@@ -60,12 +59,21 @@ def detect_buy_sell_points(
         if start >= n:
             continue
 
+        # 仅在当前中枢之后、下一个中枢开始之前的区间内打点，
+        # 避免多个中枢在同一后续行情上重复产生信号。
+        if zh_id + 1 < len(zhongshus):
+            end = min(zhongshus[zh_id + 1].start_idx, n - 1)
+        else:
+            end = n - 1
+        if start > end:
+            continue
+
         buy_count = 0   # 该中枢已记录的买点数（最多 3 个）
         sell_count = 0
 
         prev_c = closes[start - 1]
 
-        for k in range(start, n):
+        for k in range(start, end + 1):
             curr_c = closes[k]
             dt = df.index[k]
 

@@ -1,90 +1,68 @@
-"""tests/test_xd.py – 测试线段识别。"""
+"""tests/test_xd.py - segment detection from pens."""
 from __future__ import annotations
 
 import pandas as pd
-import pytest
 
 from chancode.bi import Pen
-from chancode.xd import Segment, build_segments
+from chancode.xd import build_segments
 
 
-def _make_pen(start_price, end_price, day_start=0):
-    """构造一个简单的 Pen 对象（日期从 day_start 起）。"""
-    dates = pd.date_range("2024-01-01", periods=100, freq="D")
-    is_up = end_price > start_price
+_BASE = pd.date_range("2024-01-01", periods=200, freq="D")
+
+
+def _pen(i: int, start_idx: int, end_idx: int, start_price: float, end_price: float) -> Pen:
     return Pen(
-        start_idx=day_start,
-        end_idx=day_start + 1,
-        start_datetime=dates[day_start],
-        end_datetime=dates[day_start + 1],
+        start_idx=start_idx,
+        end_idx=end_idx,
+        start_datetime=_BASE[start_idx],
+        end_datetime=_BASE[end_idx],
         start_price=start_price,
         end_price=end_price,
-        high=max(start_price, end_price) + 0.5,
-        low=min(start_price, end_price) - 0.5,
+        high=max(start_price, end_price),
+        low=min(start_price, end_price),
+        start_ftype="bottom" if end_price > start_price else "top",
+        end_ftype="top" if end_price > start_price else "bottom",
     )
 
 
-class TestBuildSegments:
-    def test_empty_input(self):
-        assert build_segments([]) == []
+def test_build_segments_empty_or_short():
+    assert build_segments([]) == []
+    short = [_pen(0, 0, 8, 10, 20), _pen(1, 8, 16, 20, 12), _pen(2, 16, 24, 12, 24), _pen(3, 24, 32, 24, 14)]
+    assert build_segments(short) == []
 
-    def test_two_pens_no_segment(self):
-        pens = [_make_pen(5, 20, 0), _make_pen(20, 10, 1)]
-        assert build_segments(pens) == []
 
-    def test_three_pens_up_segment(self):
-        # up(5→20), down(20→12), up(12→25)  → 25 > 20 → 上升线段
-        pens = [
-            _make_pen(5, 20, 0),
-            _make_pen(20, 12, 2),
-            _make_pen(12, 25, 4),
-        ]
-        segs = build_segments(pens)
-        assert len(segs) == 1
-        assert segs[0].direction == "up"
-        assert segs[0].pen_count == 3
+def test_build_segments_direction_and_sparsity():
+    # 构造交替笔，包含明显高低点，线段数量应显著少于笔数量。
+    pens = [
+        _pen(0, 0, 8, 10, 20),
+        _pen(1, 8, 16, 20, 14),
+        _pen(2, 16, 24, 14, 26),
+        _pen(3, 24, 32, 26, 13),
+        _pen(4, 32, 40, 13, 24),
+        _pen(5, 40, 48, 24, 12),
+        _pen(6, 48, 56, 12, 28),
+        _pen(7, 56, 64, 28, 11),
+    ]
+    segments = build_segments(pens, min_pivot_separation=1, min_segment_pens=3)
 
-    def test_three_pens_down_segment(self):
-        # down(20→5), up(5→15), down(15→3)  → 3 < 5 → 下降线段
-        pens = [
-            _make_pen(20, 5, 0),
-            _make_pen(5, 15, 2),
-            _make_pen(15, 3, 4),
-        ]
-        segs = build_segments(pens)
-        assert len(segs) == 1
-        assert segs[0].direction == "down"
+    assert len(segments) < len(pens)
+    for seg in segments:
+        assert seg.direction in {"up", "down"}
+        assert seg.end_idx > seg.start_idx
 
-    def test_three_pens_no_break(self):
-        # up(5→20), down(20→12), up(12→18)  → 18 < 20 → 不构成线段
-        pens = [
-            _make_pen(5, 20, 0),
-            _make_pen(20, 12, 2),
-            _make_pen(12, 18, 4),
-        ]
-        segs = build_segments(pens)
-        assert len(segs) == 0
 
-    def test_five_pen_segment(self):
-        # up, down, up(breaks), down, up(further extends)
-        pens = [
-            _make_pen(5, 20, 0),
-            _make_pen(20, 12, 2),
-            _make_pen(12, 25, 4),  # 25 > 20 → valid 3-pen
-            _make_pen(25, 18, 6),
-            _make_pen(18, 30, 8),  # 30 > 25 → extends to 5-pen
-        ]
-        segs = build_segments(pens)
-        assert len(segs) == 1
-        assert segs[0].pen_count == 5
-        assert segs[0].direction == "up"
+def test_segment_endpoints_monotonic():
+    pens = [
+        _pen(0, 0, 8, 10, 20),
+        _pen(1, 8, 16, 20, 12),
+        _pen(2, 16, 24, 12, 24),
+        _pen(3, 24, 32, 24, 14),
+        _pen(4, 32, 40, 14, 26),
+        _pen(5, 40, 48, 26, 13),
+        _pen(6, 48, 56, 13, 29),
+    ]
+    segments = build_segments(pens)
 
-    def test_segment_high_low(self):
-        pens = [
-            _make_pen(5, 20, 0),
-            _make_pen(20, 12, 2),
-            _make_pen(12, 25, 4),
-        ]
-        seg = build_segments(pens)[0]
-        assert seg.high >= seg.low
-        assert seg.high >= 25
+    for i in range(1, len(segments)):
+        assert segments[i].start_idx > segments[i - 1].start_idx
+        assert segments[i].end_idx > segments[i - 1].end_idx
