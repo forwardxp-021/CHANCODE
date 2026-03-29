@@ -9,3 +9,8 @@ build/
 venv/
 *.png
 !docs/*.png
+
+# local debug artifacts
+_tmp_*.py
+qveris_full.json
+qveris_*.csv

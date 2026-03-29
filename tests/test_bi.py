@@ -1,52 +1,66 @@
-"""tests/test_bi.py – 测试笔识别。"""
+"""tests/test_bi.py - pen construction rules."""
 from __future__ import annotations
 
 import pandas as pd
-import pytest
 
 from chancode.fractal import FractalPoint
-from chancode.bi import Pen, build_pens
+from chancode.bi import build_pens
 
 
-def _make_fractals(types_and_prices):
-    """快速构建分型列表：types_and_prices = [('top', 20), ('bottom', 5), ...]"""
-    dates = pd.date_range("2024-01-01", periods=len(types_and_prices), freq="D")
-    result = []
-    for i, (ftype, price) in enumerate(types_and_prices):
-        if ftype == "top":
-            result.append(FractalPoint(i, dates[i], "top", price, price - 2))
-        else:
-            result.append(FractalPoint(i, dates[i], "bottom", price + 2, price))
-    return result
+def _fractal(idx: int, ftype: str, price: float) -> FractalPoint:
+    dt = pd.Timestamp("2024-01-01") + pd.Timedelta(days=idx)
+    if ftype == "top":
+        return FractalPoint(idx, dt, "top", high=price, low=price - 2)
+    return FractalPoint(idx, dt, "bottom", high=price + 2, low=price)
 
 
-class TestBuildPens:
-    def test_empty_input(self):
-        assert build_pens([]) == []
+def test_build_pens_requires_min_kline_count():
+    fractals = [
+        _fractal(1, "bottom", 5),
+        _fractal(4, "top", 15),   # gap=3
+        _fractal(12, "bottom", 7),
+    ]
+    pens = build_pens(fractals, min_kline_count=5)
+    assert len(pens) == 1
+    assert pens[0].start_idx == 4
+    assert pens[0].end_idx == 12
 
-    def test_single_fractal(self):
-        fractals = _make_fractals([("top", 20)])
-        assert build_pens(fractals) == []
 
-    def test_two_fractals_one_pen(self):
-        fractals = _make_fractals([("top", 20), ("bottom", 5)])
-        pens = build_pens(fractals)
-        assert len(pens) == 1
-        assert pens[0].direction == "down"
+def test_build_pens_direction_from_fractal_type():
+    fractals = [
+        _fractal(1, "bottom", 5),
+        _fractal(10, "top", 18),
+        _fractal(20, "bottom", 8),
+    ]
+    pens = build_pens(fractals, min_kline_count=7)
+    assert len(pens) == 2
+    assert pens[0].direction == "up"
+    assert pens[1].direction == "down"
 
-    def test_three_fractals_two_pens(self):
-        fractals = _make_fractals([("bottom", 5), ("top", 20), ("bottom", 8)])
-        pens = build_pens(fractals)
-        assert len(pens) == 2
-        assert pens[0].direction == "up"
-        assert pens[1].direction == "down"
 
-    def test_pen_direction_property(self):
-        fractals = _make_fractals([("bottom", 5), ("top", 20)])
-        pen = build_pens(fractals)[0]
-        assert pen.is_up is True
+def test_build_pens_have_valid_ranges():
+    fractals = [
+        _fractal(2, "top", 22),
+        _fractal(12, "bottom", 6),
+    ]
+    pens = build_pens(fractals, min_kline_count=7)
+    assert len(pens) == 1
+    pen = pens[0]
+    assert pen.high >= pen.low
+    assert pen.start_datetime < pen.end_datetime
 
-    def test_pen_high_low(self):
-        fractals = _make_fractals([("bottom", 5), ("top", 20)])
-        pen = build_pens(fractals)[0]
-        assert pen.high >= pen.low
+
+def test_build_pens_min_separation_7_threshold():
+    fractals = [
+        _fractal(1, "bottom", 5),
+        _fractal(7, "top", 15),   # gap=6, should be rejected when threshold=7
+        _fractal(15, "top", 18),  # same type replacement candidate
+        _fractal(23, "bottom", 7),
+    ]
+
+    pens = build_pens(fractals, min_kline_count=7)
+    assert len(pens) == 2
+    assert pens[0].start_idx == 1
+    assert pens[0].end_idx == 15
+    assert pens[1].start_idx == 15
+    assert pens[1].end_idx == 23

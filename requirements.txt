@@ -1,7 +1,10 @@
-# requirements.txt – ChanCode 缠论量化分析系统依赖
-yfinance==1.2.0
-pandas==3.0.1
-numpy==2.4.3
-matplotlib==3.10.8
+# requirements.txt - ChanCode dependencies
+# Compatible with Python 3.10
+yfinance==0.2.54
+pandas==2.2.3
+numpy==1.26.4
+matplotlib==3.8.4
 mplfinance==0.12.10b0
 pytest==8.3.5
+PyYAML==6.0.2
+requests==2.32.3

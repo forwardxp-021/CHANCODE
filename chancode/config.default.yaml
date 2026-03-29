@@ -1,0 +1,48 @@
+chan:
+  # 成笔最小间距（单位：合并后K线根数）。
+  # 作用位置：
+  # 1) build_fractals_for_bi 的 min_pen_separation（成笔前分型二次筛选）
+  # 2) build_pens 的 min_kline_count（最终成笔硬约束）
+  # 数值越大：笔更稀疏、拐点更“稳”；数值越小：笔更密集、对短波动更敏感。
+  # 常用范围：1~9。
+  min_bi_separation: 3
+
+  # 分型识别是否允许“相等高低点”（平顶/平底）。
+  # true ：更容易识别分型，信号更多；
+  # false：只接受严格不等，分型更少、更保守。
+  # 作用位置：detect_fractals（主级别 + 次级别代理识别）。
+  fractal_allow_equal: true
+
+  # 展示分型去噪距离 near_gap（单位：合并后K线根数）。
+  # 作用位置：cluster_fractals_for_display。
+  # 含义：异类分型距离小于该值时，优先保留后者，减少“来回抖动”标记。
+  # 数值越大：图上分型更少、更平滑；数值越小：图上分型更密集。
+  # 常用值：1~3。
+  display_near_gap: 1
+
+  # 成笔前分型初筛最小间距（单位：合并后K线根数）。
+  # 作用位置：build_fractals_for_bi 的 min_separation（Pass 2）。
+  # 这是“噪声反转过滤阈值”，与 min_bi_separation 不同：
+  # - min_bi_separation 控制“能不能成笔”
+  # - fractal_min_separation 控制“分型是否先被保留到成笔阶段”
+  # 若你希望 2025-09-26(+1) -> 2025-10-14 这类短距离连接出现，
+  # 往往需要把该值从 3 调到 2（仅调 min_bi_separation 往往不够）。
+  fractal_min_separation: 2
+
+  # 分型强度评估前瞻窗口（单位：合并后K线根数）。
+  # 作用位置：assess_fractals 的 lookahead_bars。
+  # 用于判断分型后是 continuation / reversal / neutral。
+  # 数值越大：结构判断更“慢”但更稳；数值越小：更敏感但更易受噪声影响。
+  fractal_assess_lookahead_bars: 8
+
+  # 次级别联动确认窗口（单位：原始K线根数）。
+  # 作用位置：assess_fractals 的 lower_level_gap_bars。
+  # 含义：在分型之后，允许在该窗口内寻找次级别反向分型作为确认。
+  # 数值越大：更容易被确认；数值越小：确认更严格。
+  fractal_assess_lower_level_gap_bars: 10
+
+  # 中枢构建级别：
+  # - "bi"      : 用笔构建中枢（更细）
+  # - "segment" : 用线段构建中枢（更粗）
+  # 数值越“细”，中枢数量通常越多。
+  zhongshu_level: "bi"

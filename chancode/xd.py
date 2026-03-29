@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 
 import pandas as pd
 
@@ -40,69 +40,177 @@ class Segment:
         return self.direction == "up"
 
 
-def build_segments(pens: List[Pen]) -> List[Segment]:
-    """从笔序列中识别线段。
+@dataclass
+class _PenPivot:
+    """由笔序列确认出的转折点（线段端点候选）。"""
 
-    算法说明：
-    1. 从位置 i 开始，确定第一笔方向（is_up）。
-    2. 向右每隔 2 步（同向笔）检查是否突破第一笔极值，记录最远有效端点。
-    3. 若找到有效端点，生成线段对象，i 跳过该线段继续；否则 i += 1 重试。
-    4. 重复直到剩余笔不足 3 条。
+    ptype: str  # "top" or "bottom"
+    pen_idx: int
+    idx: int
+    datetime: pd.Timestamp
+    price: float
 
-    :param pens: 笔列表（应已交替方向）
-    :returns: 线段列表
-    """
-    if len(pens) < 3:
+
+def _is_more_extreme_pivot(curr: _PenPivot, ref: _PenPivot) -> bool:
+    if curr.ptype != ref.ptype:
+        return False
+    if curr.ptype == "top":
+        return curr.price > ref.price
+    return curr.price < ref.price
+
+
+def _detect_pen_pivots(pens: List[Pen]) -> List[_PenPivot]:
+    """使用三笔分型法确认笔级转折点。"""
+    pivots: List[_PenPivot] = []
+    for i in range(1, len(pens) - 1):
+        prev_pen = pens[i - 1]
+        cur_pen = pens[i]
+        next_pen = pens[i + 1]
+
+        is_top = (
+            cur_pen.high >= prev_pen.high
+            and cur_pen.high >= next_pen.high
+            and (cur_pen.high > prev_pen.high or cur_pen.high > next_pen.high)
+        )
+        is_bottom = (
+            cur_pen.low <= prev_pen.low
+            and cur_pen.low <= next_pen.low
+            and (cur_pen.low < prev_pen.low or cur_pen.low < next_pen.low)
+        )
+
+        if not (is_top or is_bottom):
+            continue
+
+        if is_top and not is_bottom:
+            pivots.append(
+                _PenPivot(
+                    ptype="top",
+                    pen_idx=i,
+                    idx=cur_pen.end_idx,
+                    datetime=cur_pen.end_datetime,
+                    price=cur_pen.high,
+                )
+            )
+        elif is_bottom and not is_top:
+            pivots.append(
+                _PenPivot(
+                    ptype="bottom",
+                    pen_idx=i,
+                    idx=cur_pen.end_idx,
+                    datetime=cur_pen.end_datetime,
+                    price=cur_pen.low,
+                )
+            )
+
+    return pivots
+
+
+def _filter_alternating_pivots(
+    pivots: List[_PenPivot],
+    min_pen_separation: int,
+) -> List[_PenPivot]:
+    """去重并约束端点间最小笔间隔，减少震荡噪声。"""
+    if not pivots:
         return []
 
+    min_pen_separation = max(1, int(min_pen_separation))
+    filtered: List[_PenPivot] = []
+
+    for p in pivots:
+        if not filtered:
+            filtered.append(p)
+            continue
+
+        last = filtered[-1]
+        if p.ptype == last.ptype:
+            if _is_more_extreme_pivot(p, last):
+                filtered[-1] = p
+            continue
+
+        if (p.pen_idx - last.pen_idx) < min_pen_separation:
+            continue
+
+        filtered.append(p)
+
+    return filtered
+
+
+def _has_overlap(intervals: List[tuple[float, float]]) -> bool:
+    """Check whether multiple price intervals have non-empty intersection."""
+    if not intervals:
+        return False
+    lo = max(i[0] for i in intervals)
+    hi = min(i[1] for i in intervals)
+    return lo <= hi
+
+
+def build_segments(
+    pens: List[Pen],
+    min_pivot_separation: int = 2,
+    min_segment_pens: int = 3,
+) -> List[Segment]:
+    """从笔序列识别线段（工程化简化版，接近缠论端点确认思路）。
+
+    规则：
+    1) 先在笔序列上找三笔分型确认的端点（顶/底）；
+    2) 端点需顶底交替且满足最小笔间隔；
+    3) 相邻端点间至少覆盖 min_segment_pens 根笔才形成线段。
+    """
+    if len(pens) < 5:
+        return []
+
+    pivots = _detect_pen_pivots(pens)
+    pivots = _filter_alternating_pivots(pivots, min_pen_separation=min_pivot_separation)
+    if len(pivots) < 2:
+        return []
+
+    min_segment_pens = max(1, int(min_segment_pens))
     segments: List[Segment] = []
-    i = 0
 
-    while i < len(pens) - 2:
-        pen0 = pens[i]
-        is_up = pen0.is_up
+    for i in range(len(pivots) - 1):
+        a = pivots[i]
+        b = pivots[i + 1]
 
-        seg_end: Optional[int] = None  # 当前找到的最远有效终点（笔列表索引）
+        if a.ptype == b.ptype:
+            continue
+        if b.pen_idx <= a.pen_idx:
+            continue
 
-        # 第一笔的极值（用于突破判断）
-        first_extreme = pen0.high if is_up else pen0.low
+        covered_pens = b.pen_idx - a.pen_idx + 1
+        if covered_pens < min_segment_pens:
+            continue
 
-        j = i + 2  # 步长 2：跳过反向笔，落在同向笔上
-        while j < len(pens):
-            pen_j = pens[j]
+        # 线段由奇数笔构成（起止同向）
+        if covered_pens % 2 == 0:
+            continue
 
-            # 同向笔方向应与 pen0 一致（由交替分型保证）
-            # 如不一致（数据异常），停止延伸
-            if pen_j.is_up != is_up:
-                break
+        seg_pens = pens[a.pen_idx : b.pen_idx + 1]
 
-            if is_up and pen_j.high > first_extreme:
-                seg_end = j
-                # 继续尝试延伸（贪心）
-            elif not is_up and pen_j.low < first_extreme:
-                seg_end = j
+        # 至少前三笔必须存在价格重叠区间
+        if len(seg_pens) < 3:
+            continue
+        first_three = seg_pens[:3]
+        if not _has_overlap([(p.low, p.high) for p in first_three]):
+            continue
 
-            j += 2  # 继续检查下一个同向笔
+        direction = "up" if (a.ptype == "bottom" and b.ptype == "top") else "down"
 
-        if seg_end is not None:
-            end_pen = pens[seg_end]
-            seg_pens = pens[i : seg_end + 1]
-            segment = Segment(
-                start_idx=pen0.start_idx,
-                end_idx=end_pen.end_idx,
-                start_datetime=pen0.start_datetime,
-                end_datetime=end_pen.end_datetime,
-                start_price=pen0.start_price,
-                end_price=end_pen.end_price,
-                direction="up" if is_up else "down",
-                high=max(p.high for p in seg_pens),
-                low=min(p.low for p in seg_pens),
-                pen_count=len(seg_pens),
-            )
-            segments.append(segment)
-            i = seg_end + 1  # 下一线段从当前线段终点后开始
-        else:
-            i += 1  # 无法从 i 开始形成线段，往前移一步
+        segment = Segment(
+            start_idx=a.idx,
+            end_idx=b.idx,
+            start_datetime=a.datetime,
+            end_datetime=b.datetime,
+            start_price=a.price,
+            end_price=b.price,
+            direction=direction,
+            high=max(p.high for p in seg_pens),
+            low=min(p.low for p in seg_pens),
+            pen_count=covered_pens,
+        )
+        segments.append(segment)
 
-    print(f"[xd] 识别线段 {len(segments)} 条。")
+    print(
+        f"[xd] 识别线段 {len(segments)} 条"
+        f"（pivot_sep={min_pivot_separation}, min_segment_pens={min_segment_pens}）。"
+    )
     return segments
