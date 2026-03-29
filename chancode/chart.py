@@ -10,9 +10,10 @@ Use mplfinance + matplotlib to draw chart elements:
 """
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
+from matplotlib.ticker import FuncFormatter
 from matplotlib.patches import Rectangle
 import mplfinance as mpf
 import pandas as pd
@@ -42,6 +43,23 @@ def _build_pos_map(df: pd.DataFrame) -> Dict[pd.Timestamp, int]:
 def _x_of(dt: pd.Timestamp, pos_map: Dict[pd.Timestamp, int], fallback: int) -> int:
     """将时间戳映射为 x 轴整数位置；缺失时回退到给定索引。"""
     return pos_map.get(pd.Timestamp(dt), fallback)
+
+
+def _apply_compact_date_axis(ax: plt.Axes, df: pd.DataFrame) -> None:
+    """Use compact date labels (YYYY.MM.DD) with smaller font on x-axis."""
+    dates = list(df.index)
+
+    def _fmt(x, _pos):
+        i = int(round(x))
+        if i < 0 or i >= len(dates):
+            return ""
+        return pd.Timestamp(dates[i]).strftime("%Y.%m.%d")
+
+    ax.xaxis.set_major_formatter(FuncFormatter(_fmt))
+    ax.tick_params(axis="x", labelsize=8)
+    for lbl in ax.get_xticklabels():
+        lbl.set_rotation(35)
+        lbl.set_ha("right")
 
 
 def _draw_merged_kline_boxes(
@@ -90,6 +108,8 @@ def plot_chan(
     figsize: tuple = (14, 9),
     merged_indices: Optional[set] = None,
     merged_boxes: Optional[List[MergedKlineBox]] = None,
+    fractal_strength_labels: Optional[Dict[Tuple[int, str], str]] = None,
+    show: bool = True,
 ) -> plt.Figure:
     """绘制完整的缠论分析图。
 
@@ -105,6 +125,8 @@ def plot_chan(
     :param figsize: 图表尺寸
     :param merged_indices: 原始 df 中参与合并的行位置集合（整数）
     :param merged_boxes: 包含关系分组方框信息（优先使用）
+    :param fractal_strength_labels: 分型力度文本，key=(原始K线 idx, ftype)
+    :param show: 是否调用 plt.show()（嵌入 GUI 时应为 False）
     :returns: matplotlib Figure 对象
     """
     fig, axes = mpf.plot(
@@ -135,6 +157,34 @@ def plot_chan(
         ax.scatter(top_x, top_y, marker="v", color="red", s=40, zorder=5, label="Top Fractal")
     if bot_x:
         ax.scatter(bot_x, bot_y, marker="^", color="green", s=40, zorder=5, label="Bottom Fractal")
+
+    # 分型力度（小字号）：顶分型标在上方，底分型标在下方。
+    if fractal_strength_labels:
+        for f in fractals:
+            key = (int(f.idx), f.ftype)
+            label = fractal_strength_labels.get(key)
+            if not label:
+                continue
+            x = _x_of(f.datetime, pos_map, f.idx)
+            if f.ftype == "top":
+                offset = (0, 10)
+                va = "bottom"
+                color = "darkred"
+            else:
+                offset = (0, -14)
+                va = "top"
+                color = "darkgreen"
+            ax.annotate(
+                label,
+                xy=(x, f.high if f.ftype == "top" else f.low),
+                xytext=offset,
+                textcoords="offset points",
+                ha="center",
+                va=va,
+                color=color,
+                fontsize=6,
+                zorder=7,
+            )
 
     # ── 笔 ───────────────────────────────────────────────────
     for idx, pen in enumerate(pens):
@@ -220,13 +270,14 @@ def plot_chan(
         )
 
     # ── 图例与标题 ───────────────────────────────────────────
+    _apply_compact_date_axis(ax, df)
     ax.legend(loc="upper left", fontsize=8)
     ax.set_title(title, fontsize=12)
 
     if out:
         fig.savefig(out, dpi=150, bbox_inches="tight")
         print(f"[chart] Chart saved to {out}")
-    else:
+    elif show:
         plt.show()
 
     return fig

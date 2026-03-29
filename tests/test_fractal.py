@@ -7,6 +7,7 @@ from chancode.fractal import (
     detect_fractals,
     cluster_fractals_for_display,
     build_fractals_for_bi,
+    diagnose_fractal_bar,
     map_fractals_to_original,
     merge_klines,
 )
@@ -127,4 +128,65 @@ def test_map_fractals_to_original_anchor_extreme_uses_group_extrema():
     group = merge_result.merged_to_original[0]
     expected_idx = max(group, key=lambda i: float(df["High"].iloc[i]))
     assert mapped[0].idx == expected_idx
+
+
+def test_diagnose_fractal_bar_reports_pipeline_reasoning():
+    highs = [10, 12, 11, 13, 9, 14, 8]
+    lows = [7, 8, 8.2, 9, 6, 10, 5]
+    df = _make_df(highs, lows)
+
+    merge_result = merge_klines(df)
+    merged_df = merge_result.merged_df
+    raw = detect_fractals(merged_df, allow_equal=True)
+    clustered = cluster_fractals_for_display(raw, near_gap=1)
+    mapped = map_fractals_to_original(
+        clustered,
+        merge_result,
+        anchor="extreme",
+        original_index=df.index,
+        original_df=df,
+    )
+
+    msg = diagnose_fractal_bar(
+        original_df=df,
+        merge_result=merge_result,
+        raw_fractals_merged=raw,
+        clustered_fractals_merged=clustered,
+        mapped_fractals_original=mapped,
+        target_datetime=df.index[2],
+        allow_equal=True,
+    )
+
+    assert "[diag] target=" in msg
+    assert "[diag] original fractal flags:" in msg
+    assert "[diag] merged raw fractal types=" in msg
+    assert "[diag] reason:" in msg
+
+
+def test_merge_klines_can_chain_by_merged_bar_containment():
+    # 按缠论常见处理：始终比较“当前合并K线”与“下一根K线”，可出现链式并组。
+    df = _make_df(
+        highs=[8.56, 8.55, 8.50, 8.55, 8.50, 8.52],
+        lows=[8.47, 8.45, 8.39, 8.39, 8.40, 8.39],
+    )
+
+    merge_result = merge_klines(df)
+    groups = merge_result.merged_to_original
+
+    # 在该规则下，允许出现 [2,3,4,5] 的链式合并组。
+    assert [2, 3, 4, 5] in groups
+
+
+def test_merge_klines_uses_group_envelope_for_containment():
+    # 一旦前序K线形成包含组，后续包含判定应使用该组的整体高低（组内最高/最低）。
+    df = _make_df(
+        highs=[8.78, 8.78, 8.76, 8.91, 8.85, 8.88, 8.89, 8.87],
+        lows=[8.70, 8.70, 8.68, 8.73, 8.79, 8.79, 8.82, 8.78],
+    )
+
+    merge_result = merge_klines(df)
+    groups = merge_result.merged_to_original
+
+    # 最后一个 bar（idx=7）被前面的包含组整体包住，应并入同一组。
+    assert [3, 4, 5, 6, 7] in groups
 

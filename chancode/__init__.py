@@ -15,10 +15,13 @@ from __future__ import annotations
 from chancode.data import fetch_ohlcv
 from chancode.fractal import (
   FractalPoint,
+  FractalAssessment,
   detect_fractals,
   cluster_fractals_for_display,
   build_fractals_for_bi,
   filter_and_alternate_fractals,
+  assess_fractals,
+  diagnose_fractal_bar,
   map_fractals_to_original,
   merge_klines,
 )
@@ -31,10 +34,13 @@ from chancode.config import Config, load_config
 __all__ = [
     "fetch_ohlcv",
     "FractalPoint",
+    "FractalAssessment",
     "detect_fractals",
     "cluster_fractals_for_display",
     "build_fractals_for_bi",
     "filter_and_alternate_fractals",
+    "assess_fractals",
+    "diagnose_fractal_bar",
     "map_fractals_to_original",
     "merge_klines",
     "Pen",

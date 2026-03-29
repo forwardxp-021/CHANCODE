@@ -32,6 +32,17 @@ class FractalPoint:
 
 
 @dataclass
+class FractalAssessment:
+    """分型质量评估结果。"""
+
+    point: FractalPoint
+    strength_score: float            # 0-100
+    strength_level: str              # weak / medium / strong
+    structure_label: str             # continuation / reversal / neutral / unknown
+    lower_level_confirmed: bool      # 次级别联动是否确认
+
+
+@dataclass
 class MergedKlineBox:
     """用于显示包含关系的方框信息（基于原始K线位置）。"""
 
@@ -97,6 +108,10 @@ def merge_klines(df: pd.DataFrame) -> MergeKlineResult:
     m_volume: list = []
     m_index: list = []
 
+    # 记录包含组的边界高低，用于后续包含判断（始终取组内最高/最低）。
+    m_high_env: list = []
+    m_low_env: list = []
+
     # 每个逻辑 K 线包含的原始行位置列表
     group_positions: list = []  # list of list[int]
 
@@ -110,24 +125,48 @@ def merge_klines(df: pd.DataFrame) -> MergeKlineResult:
             m_volume.append(volumes[i])
             m_index.append(index[i])
             group_positions.append([i])
+            m_high_env.append(highs[i])
+            m_low_env.append(lows[i])
             continue
 
         prev_h = m_high[-1]
         prev_l = m_low[-1]
+        prev_h_env = m_high_env[-1]
+        prev_l_env = m_low_env[-1]
         curr_h = highs[i]
         curr_l = lows[i]
 
-        # 判断包含关系：curr 被 prev 包含，或 prev 被 curr 包含
-        contained = (prev_h >= curr_h and prev_l <= curr_l) or (
-            curr_h >= prev_h and curr_l <= prev_l
+        # 判断包含关系：使用包含组的整体高低（组内最高/最低）与下一根K线比对。
+        contained = (prev_h_env >= curr_h and prev_l_env <= curr_l) or (
+            curr_h >= prev_h_env and curr_l <= prev_l_env
         )
 
         if contained:
-            # 确定趋势：用合并前的前一个逻辑 K 线与当前逻辑 K 线的高点比较
+            # 确定趋势：优先比较上一根与上上一根的高/低点；不足两根时比较当前与上一根。
             if len(m_high) >= 2:
-                trend_up = m_high[-1] > m_high[-2]
+                prior_h, prior_l = m_high[-2], m_low[-2]
+                last_h, last_l = m_high[-1], m_low[-1]
+
+                if last_h > prior_h:
+                    trend_up = True
+                elif last_h < prior_h:
+                    trend_up = False
+                elif last_l > prior_l:
+                    trend_up = True
+                elif last_l < prior_l:
+                    trend_up = False
+                else:
+                    trend_up = True  # 完全持平时默认向上
             else:
-                trend_up = curr_h >= prev_h  # 只有一根历史时，以当前走向为准
+                # 只有一根历史时，以当前与上一根的高/低关系判断。
+                if curr_h > prev_h:
+                    trend_up = True
+                elif curr_h < prev_h:
+                    trend_up = False
+                elif curr_l > prev_l:
+                    trend_up = True
+                else:
+                    trend_up = False
 
             if trend_up:
                 m_high[-1] = max(prev_h, curr_h)
@@ -135,6 +174,10 @@ def merge_klines(df: pd.DataFrame) -> MergeKlineResult:
             else:
                 m_high[-1] = min(prev_h, curr_h)
                 m_low[-1] = min(prev_l, curr_l)
+
+            # 更新组边界，供后续包含判断使用。
+            m_high_env[-1] = max(prev_h_env, curr_h)
+            m_low_env[-1] = min(prev_l_env, curr_l)
 
             # open/close/volume 沿用该组第一根的开盘价和最后一根的收盘价及累计成交量
             m_close[-1] = closes[i]
@@ -148,6 +191,8 @@ def merge_klines(df: pd.DataFrame) -> MergeKlineResult:
             m_volume.append(volumes[i])
             m_index.append(index[i])
             group_positions.append([i])
+            m_high_env.append(curr_h)
+            m_low_env.append(curr_l)
 
     merged_df = pd.DataFrame(
         {
@@ -451,3 +496,212 @@ def map_fractals_to_original(
         )
 
     return mapped
+
+
+def assess_fractals(
+    df: pd.DataFrame,
+    fractals: List[FractalPoint],
+    lookahead_bars: int = 8,
+    lower_level_fractals: List[FractalPoint] | None = None,
+    lower_level_gap_bars: int = 10,
+) -> List[FractalAssessment]:
+    """评估分型强弱、结构类型（中继/转折）及次级别联动确认。"""
+    if not fractals:
+        return []
+
+    lookahead_bars = max(1, int(lookahead_bars))
+    lower_level_gap_bars = max(1, int(lower_level_gap_bars))
+
+    highs = df["High"].values
+    lows = df["Low"].values
+    opens = df["Open"].values
+    closes = df["Close"].values
+
+    lower = sorted(lower_level_fractals or [], key=lambda x: x.idx)
+    assessments: List[FractalAssessment] = []
+
+    def _strength_level(score: float) -> str:
+        if score >= 70:
+            return "strong"
+        if score >= 45:
+            return "medium"
+        return "weak"
+
+    for f in fractals:
+        i = f.idx
+        if i <= 0 or i >= len(df) - 1:
+            assessments.append(
+                FractalAssessment(
+                    point=f,
+                    strength_score=0.0,
+                    strength_level="weak",
+                    structure_label="unknown",
+                    lower_level_confirmed=False,
+                )
+            )
+            continue
+
+        ph, ch, nh = float(highs[i - 1]), float(highs[i]), float(highs[i + 1])
+        pl, cl, nl = float(lows[i - 1]), float(lows[i]), float(lows[i + 1])
+        o3, c3 = float(opens[i + 1]), float(closes[i + 1])
+
+        # 1) 分型力度评分（0-100）：极值程度 + 第三根确认力度。
+        score = 0.0
+        mid_range = max(1e-9, ch - cl)
+        tri_range = max(1e-9, max(ph, ch, nh) - min(pl, cl, nl))
+
+        if f.ftype == "top":
+            peak_edge = max(0.0, ch - max(ph, nh)) / tri_range
+            body_confirm = max(0.0, (o3 - c3)) / mid_range
+            close_below_mid = 1.0 if c3 < ((ch + cl) / 2.0) else 0.0
+            no_new_high = 1.0 if nh <= ch else 0.0
+
+            score = (
+                45.0 * min(1.0, peak_edge * 4.0)
+                + 30.0 * min(1.0, body_confirm)
+                + 15.0 * close_below_mid
+                + 10.0 * no_new_high
+            )
+        else:
+            trough_edge = max(0.0, min(ph, nh) - cl) / tri_range
+            body_confirm = max(0.0, (c3 - o3)) / mid_range
+            close_above_mid = 1.0 if c3 > ((ch + cl) / 2.0) else 0.0
+            no_new_low = 1.0 if nl >= cl else 0.0
+
+            score = (
+                45.0 * min(1.0, trough_edge * 4.0)
+                + 30.0 * min(1.0, body_confirm)
+                + 15.0 * close_above_mid
+                + 10.0 * no_new_low
+            )
+
+        score = max(0.0, min(100.0, score))
+
+        # 2) 中继/转折标签：看分型后 lookahead_bars 内是否延续原方向极值。
+        future_l = i + 1
+        future_r = min(len(df), i + 1 + lookahead_bars)
+        f_high = float(max(highs[future_l:future_r])) if future_l < future_r else ch
+        f_low = float(min(lows[future_l:future_r])) if future_l < future_r else cl
+
+        if f.ftype == "top":
+            if f_high > ch:
+                structure_label = "continuation"
+            elif f_low < cl:
+                structure_label = "reversal"
+            else:
+                structure_label = "neutral"
+        else:
+            if f_low < cl:
+                structure_label = "continuation"
+            elif f_high > ch:
+                structure_label = "reversal"
+            else:
+                structure_label = "neutral"
+
+        # 3) 次级别联动确认：分型后若次级别出现反向分型，视为已确认。
+        desired = "bottom" if f.ftype == "top" else "top"
+        confirmed = False
+        if lower:
+            for lf in lower:
+                if lf.idx <= i:
+                    continue
+                if (lf.idx - i) > lower_level_gap_bars:
+                    break
+                if lf.ftype == desired:
+                    confirmed = True
+                    break
+
+        assessments.append(
+            FractalAssessment(
+                point=f,
+                strength_score=round(score, 2),
+                strength_level=_strength_level(score),
+                structure_label=structure_label,
+                lower_level_confirmed=confirmed,
+            )
+        )
+
+    return assessments
+
+
+def diagnose_fractal_bar(
+    original_df: pd.DataFrame,
+    merge_result: MergeKlineResult,
+    raw_fractals_merged: List[FractalPoint],
+    clustered_fractals_merged: List[FractalPoint],
+    mapped_fractals_original: List[FractalPoint],
+    target_datetime: pd.Timestamp,
+    allow_equal: bool = True,
+) -> str:
+    """诊断某一根原始K线为何/为何不被标记为分型。"""
+    target = pd.Timestamp(target_datetime)
+    if target not in original_df.index:
+        raise ValueError(f"目标日期不在当前数据中: {target.date()}")
+
+    i = int(original_df.index.get_loc(target))
+    n = len(original_df)
+
+    highs = original_df["High"].values
+    lows = original_df["Low"].values
+
+    # 原始三K线判定（不经过包含合并）
+    orig_is_top = False
+    orig_is_bottom = False
+    if 0 < i < n - 1:
+        ph, ch, nh = highs[i - 1], highs[i], highs[i + 1]
+        pl, cl, nl = lows[i - 1], lows[i], lows[i + 1]
+        if allow_equal:
+            orig_is_top = (
+                ch >= ph and ch >= nh
+                and cl >= pl and cl >= nl
+                and (ch > ph or ch > nh)
+                and (cl > pl or cl > nl)
+            )
+            orig_is_bottom = (
+                ch <= ph and ch <= nh
+                and cl <= pl and cl <= nl
+                and (ch < ph or ch < nh)
+                and (cl < pl or cl < nl)
+            )
+        else:
+            orig_is_top = ch > ph and ch > nh and cl > pl and cl > nl
+            orig_is_bottom = ch < ph and ch < nh and cl < pl and cl < nl
+
+    merged_idx = merge_result.orig_to_merged_index[i]
+    group = merge_result.merged_to_original[merged_idx] if 0 <= merged_idx < len(merge_result.merged_to_original) else []
+
+    raw_hits = [f.ftype for f in raw_fractals_merged if f.idx == merged_idx]
+    clustered_hits = [f.ftype for f in clustered_fractals_merged if f.idx == merged_idx]
+    mapped_hits = [f.ftype for f in mapped_fractals_original if f.idx == i]
+
+    reason = ""
+    if not orig_is_top and not orig_is_bottom:
+        reason = "原始三K线不满足分型几何条件（需同时满足高低双侧约束）。"
+    elif raw_hits and not clustered_hits:
+        reason = "在合并后原始分型存在，但被近邻聚类去噪替换。"
+    elif clustered_hits and not mapped_hits and len(group) > 1:
+        reason = "合并组内分型存在，但映射锚点落在组内其他K线，不是该bar。"
+    elif not raw_hits:
+        reason = "包含合并后的K线序列上，该位置不是分型。"
+    else:
+        reason = "该bar已通过当前流程判定为分型。"
+
+    prev_line = "N/A"
+    curr_line = f"idx={i} H={float(highs[i]):.4f} L={float(lows[i]):.4f}"
+    next_line = "N/A"
+    if i > 0:
+        prev_line = f"idx={i-1} H={float(highs[i-1]):.4f} L={float(lows[i-1]):.4f}"
+    if i < n - 1:
+        next_line = f"idx={i+1} H={float(highs[i+1]):.4f} L={float(lows[i+1]):.4f}"
+
+    lines = [
+        f"[diag] target={target.date()} idx={i}",
+        f"[diag] original neighbors: prev({prev_line}) curr({curr_line}) next({next_line})",
+        f"[diag] original fractal flags: top={orig_is_top} bottom={orig_is_bottom}",
+        f"[diag] merged group idx={merged_idx} members={group}",
+        f"[diag] merged raw fractal types={raw_hits or ['none']}",
+        f"[diag] merged clustered fractal types={clustered_hits or ['none']}",
+        f"[diag] mapped fractal on target bar={mapped_hits or ['none']}",
+        f"[diag] reason: {reason}",
+    ]
+    return "\n".join(lines)

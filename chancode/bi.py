@@ -60,7 +60,7 @@ def build_pens(
         return pens
 
     if min_kline_count is None:
-        min_kline_count = (config.min_bi_separation if config else 7)
+        min_kline_count = (config.min_bi_separation if config else Config().min_bi_separation)
     min_kline_count = max(1, int(min_kline_count))
 
     i = 0

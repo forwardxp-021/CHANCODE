@@ -41,11 +41,14 @@ def main() -> None:
         merged_indices = merge_result.merged_indices
         merged_boxes = merge_result.merged_boxes
 
-        fractals_raw = detect_fractals(merged_df, allow_equal=True)
-        fractals_all_merged = cluster_fractals_for_display(fractals_raw, near_gap=2)
+        fractals_raw = detect_fractals(merged_df, allow_equal=cfg.fractal_allow_equal)
+        fractals_all_merged = cluster_fractals_for_display(
+            fractals_raw,
+            near_gap=cfg.display_near_gap,
+        )
         fractals_for_bi = build_fractals_for_bi(
             fractals_all_merged,
-            min_separation=3,
+            min_separation=cfg.fractal_min_separation,
             min_pen_separation=cfg.min_bi_separation,
         )
         fractals_for_plot = map_fractals_to_original(
