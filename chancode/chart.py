@@ -109,6 +109,12 @@ def plot_chan(
     merged_indices: Optional[set] = None,
     merged_boxes: Optional[List[MergedKlineBox]] = None,
     fractal_strength_labels: Optional[Dict[Tuple[int, str], str]] = None,
+    show_fractal_tops: bool = True,
+    show_fractal_bottoms: bool = True,
+    show_merged_boxes: bool = True,
+    show_pens: bool = True,
+    show_segments: bool = True,
+    show_zhongshus: bool = True,
     show: bool = True,
 ) -> plt.Figure:
     """绘制完整的缠论分析图。
@@ -142,17 +148,17 @@ def plot_chan(
     pos_map = _build_pos_map(df)
 
     # ── 合并 K 线显示 ─────────────────────────────────────────
-    if merged_boxes:
+    if show_merged_boxes and merged_boxes:
         _draw_merged_kline_boxes(ax, merged_boxes)
     elif merged_indices:
         # backward compatibility: no grouped box metadata available
         pass
 
     # ── 分型 ──────────────────────────────────────────────────
-    top_x = [_x_of(f.datetime, pos_map, f.idx) for f in fractals if f.ftype == "top"]
-    top_y = [f.high for f in fractals if f.ftype == "top"]
-    bot_x = [_x_of(f.datetime, pos_map, f.idx) for f in fractals if f.ftype == "bottom"]
-    bot_y = [f.low for f in fractals if f.ftype == "bottom"]
+    top_x = [_x_of(f.datetime, pos_map, f.idx) for f in fractals if f.ftype == "top"] if show_fractal_tops else []
+    top_y = [f.high for f in fractals if f.ftype == "top"] if show_fractal_tops else []
+    bot_x = [_x_of(f.datetime, pos_map, f.idx) for f in fractals if f.ftype == "bottom"] if show_fractal_bottoms else []
+    bot_y = [f.low for f in fractals if f.ftype == "bottom"] if show_fractal_bottoms else []
     if top_x:
         ax.scatter(top_x, top_y, marker="v", color="red", s=40, zorder=5, label="Top Fractal")
     if bot_x:
@@ -164,6 +170,8 @@ def plot_chan(
             key = (int(f.idx), f.ftype)
             label = fractal_strength_labels.get(key)
             if not label:
+                continue
+            if (f.ftype == "top" and not show_fractal_tops) or (f.ftype == "bottom" and not show_fractal_bottoms):
                 continue
             x = _x_of(f.datetime, pos_map, f.idx)
             if f.ftype == "top":
@@ -187,56 +195,59 @@ def plot_chan(
             )
 
     # ── 笔 ───────────────────────────────────────────────────
-    for idx, pen in enumerate(pens):
-        x0 = _x_of(pen.start_datetime, pos_map, pen.start_idx)
-        x1 = _x_of(pen.end_datetime, pos_map, pen.end_idx)
-        ax.plot(
-            [x0, x1],
-            [pen.start_price, pen.end_price],
-            color="orange",
-            linewidth=1.2,
-            alpha=0.8,
-            label="Pen" if idx == 0 else None,
-        )
+    if show_pens:
+        for idx, pen in enumerate(pens):
+            x0 = _x_of(pen.start_datetime, pos_map, pen.start_idx)
+            x1 = _x_of(pen.end_datetime, pos_map, pen.end_idx)
+            ax.plot(
+                [x0, x1],
+                [pen.start_price, pen.end_price],
+                color="orange",
+                linewidth=1.2,
+                alpha=0.8,
+                label="Pen" if idx == 0 else None,
+            )
 
     # ── 线段 ─────────────────────────────────────────────────
-    for idx, seg in enumerate(segments):
-        color = "royalblue" if seg.is_up else "salmon"
-        x0 = _x_of(seg.start_datetime, pos_map, seg.start_idx)
-        x1 = _x_of(seg.end_datetime, pos_map, seg.end_idx)
-        ax.plot(
-            [x0, x1],
-            [seg.start_price, seg.end_price],
-            color=color,
-            linewidth=2.5,
-            alpha=0.85,
-            label="Segment (Up)" if (idx == 0 and seg.is_up) else ("Segment (Down)" if (idx == 0 and not seg.is_up) else None),
-        )
+    if show_segments:
+        for idx, seg in enumerate(segments):
+            color = "royalblue" if seg.is_up else "salmon"
+            x0 = _x_of(seg.start_datetime, pos_map, seg.start_idx)
+            x1 = _x_of(seg.end_datetime, pos_map, seg.end_idx)
+            ax.plot(
+                [x0, x1],
+                [seg.start_price, seg.end_price],
+                color=color,
+                linewidth=2.5,
+                alpha=0.85,
+                label="Segment (Up)" if (idx == 0 and seg.is_up) else ("Segment (Down)" if (idx == 0 and not seg.is_up) else None),
+            )
 
     # ── 中枢 ─────────────────────────────────────────────────
-    for idx, zh in enumerate(zhongshus):
-        x0 = _x_of(zh.start_datetime, pos_map, zh.start_idx)
-        x1 = _x_of(zh.end_datetime, pos_map, zh.end_idx)
-        rect = Rectangle(
-            (x0, zh.low),
-            x1 - x0,
-            zh.high - zh.low,
-            facecolor="purple",
-            alpha=0.08,
-            edgecolor="purple",
-            linestyle="--",
-            linewidth=1.2,
-            label="Center" if idx == 0 else None,
-        )
-        ax.add_patch(rect)
-        ax.hlines(
-            [zh.low, zh.high],
-            xmin=x0,
-            xmax=x1,
-            colors="purple",
-            linestyles="dashed",
-            linewidth=0.8,
-        )
+    if show_zhongshus:
+        for idx, zh in enumerate(zhongshus):
+            x0 = _x_of(zh.start_datetime, pos_map, zh.start_idx)
+            x1 = _x_of(zh.end_datetime, pos_map, zh.end_idx)
+            rect = Rectangle(
+                (x0, zh.low),
+                x1 - x0,
+                zh.high - zh.low,
+                facecolor="purple",
+                alpha=0.08,
+                edgecolor="purple",
+                linestyle="--",
+                linewidth=1.2,
+                label="Center" if idx == 0 else None,
+            )
+            ax.add_patch(rect)
+            ax.hlines(
+                [zh.low, zh.high],
+                xmin=x0,
+                xmax=x1,
+                colors="purple",
+                linestyles="dashed",
+                linewidth=0.8,
+            )
 
     # ── 买卖点 ───────────────────────────────────────────────
     for pt in buys:
@@ -271,7 +282,6 @@ def plot_chan(
 
     # ── 图例与标题 ───────────────────────────────────────────
     _apply_compact_date_axis(ax, df)
-    ax.legend(loc="upper left", fontsize=8)
     ax.set_title(title, fontsize=12)
 
     if out:

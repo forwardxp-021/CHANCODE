@@ -23,6 +23,7 @@ def test_load_default_config_when_project_override_missing():
     try:
         cfg = load_config()
         assert cfg.min_bi_separation == 3
+        assert cfg.min_pen_separation == 3
         assert cfg.fractal_allow_equal is True
         assert cfg.display_near_gap == 1
         assert cfg.fractal_min_separation == 2
@@ -51,6 +52,7 @@ def test_project_root_config_overrides_default():
             (
                 "chan:\n"
                 "  min_bi_separation: 9\n"
+                "  min_pen_separation: 5\n"
                 "  fractal_allow_equal: false\n"
                 "  display_near_gap: 2\n"
                 "  fractal_min_separation: 4\n"
@@ -62,6 +64,7 @@ def test_project_root_config_overrides_default():
         )
         cfg = load_config()
         assert cfg.min_bi_separation == 9
+        assert cfg.min_pen_separation == 5
         assert cfg.fractal_allow_equal is False
         assert cfg.display_near_gap == 2
         assert cfg.fractal_min_separation == 4
@@ -78,6 +81,13 @@ def test_project_root_config_overrides_default():
 def test_invalid_min_bi_separation_raises(tmp_path: Path):
     p = tmp_path / "bad.yaml"
     p.write_text("chan:\n  min_bi_separation: 0\n  zhongshu_level: bi\n", encoding="utf-8")
+    with pytest.raises(ValueError):
+        load_config(str(p))
+
+
+def test_invalid_min_pen_separation_raises(tmp_path: Path):
+    p = tmp_path / "bad.yaml"
+    p.write_text("chan:\n  min_pen_separation: 0\n  zhongshu_level: bi\n", encoding="utf-8")
     with pytest.raises(ValueError):
         load_config(str(p))
 

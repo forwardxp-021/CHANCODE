@@ -52,7 +52,8 @@ def build_pens(
 
     成笔条件：
     1) 起止分型必须为异类型；
-    2) 起止分型索引间隔 >= min_kline_count（合并K线数量约束）。
+    2) 起止分型索引间隔 >= min_kline_count（合并K线数量约束）；
+    3) 价格区间必须有重叠，避免“顶在底下方”的伪笔。
     """
     pens: List[Pen] = []
 
@@ -93,6 +94,11 @@ def build_pens(
 
             high = max(a.high, b.high)
             low = min(a.low, b.low)
+            if high <= low:
+                print(
+                    f"[bi] 跳过无价格重叠的分型: {a.ftype}->{b.ftype} high={high} low={low}"
+                )
+                continue
 
             pens.append(
                 Pen(

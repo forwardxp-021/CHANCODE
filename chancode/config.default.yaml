@@ -1,11 +1,14 @@
 chan:
   # 成笔最小间距（单位：合并后K线根数）。
-  # 作用位置：
-  # 1) build_fractals_for_bi 的 min_pen_separation（成笔前分型二次筛选）
-  # 2) build_pens 的 min_kline_count（最终成笔硬约束）
+  # 作用位置：build_pens 的 min_kline_count（最终成笔硬约束）。
   # 数值越大：笔更稀疏、拐点更“稳”；数值越小：笔更密集、对短波动更敏感。
-  # 常用范围：1~9。
+  # 文档要求“顶底之间至少有一根非分型K线”，对应中心间距至少为 3。
   min_bi_separation: 3
+
+  # 成笔前分型二次筛选的最小间距（单位：合并后K线根数）。
+  # 作用位置：build_fractals_for_bi 的 min_pen_separation。
+  # 用于保证留下的分型对能够满足成笔距离要求，避免过近反转形成伪笔。
+  min_pen_separation: 3
 
   # 分型识别是否允许“相等高低点”（平顶/平底）。
   # true ：更容易识别分型，信号更多；

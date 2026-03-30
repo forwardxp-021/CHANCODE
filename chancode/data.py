@@ -32,9 +32,9 @@ _INTERVAL_TO_PERIOD: dict[str, str] = {
 _CACHE_DIR: Path = Path.home() / ".chancode_cache"
 
 
-def _cache_paths(ticker: str, interval: str, num_periods: int) -> tuple[Path, Path]:
-    """Return parquet and csv cache paths for a given key."""
-    key = f"{ticker}_{interval}_{num_periods}"
+def _cache_paths(ticker: str, interval: str, num_periods: int, source_tag: str) -> tuple[Path, Path]:
+    """Return parquet and csv cache paths for a given key; include source to avoid mixing."""
+    key = f"{source_tag}_{ticker}_{interval}_{num_periods}"
     stem = hashlib.md5(key.encode()).hexdigest()
     return _CACHE_DIR / f"{stem}.parquet", _CACHE_DIR / f"{stem}.csv"
 
@@ -524,7 +524,11 @@ def _fetch_ohlcv_qveris(
             break
 
     if not rows:
-        raise ValueError(f"QVeris execution failed for ticker={ticker}. Last error: {last_error or 'unknown'}")
+        hint = ""
+        err_l = (last_error or "").lower()
+        if "http 402" in err_l or "状态码:402" in err_l or "状态码: 402" in err_l:
+            hint = " (HTTP 402，通常表示额度不足或当前账号无该工具权限；可切换 Yahoo 或升级 QVeris 配额/权限)"
+        raise ValueError(f"QVeris execution failed for ticker={ticker}. Last error: {last_error or 'unknown'}{hint}")
 
     normalized = []
     for r in rows:
@@ -564,14 +568,43 @@ def _fetch_ohlcv_qveris(
     return df
 
 
-def _cache_path(ticker: str, interval: str, num_periods: int) -> Path:
+def _cache_path(ticker: str, interval: str, num_periods: int, source_tag: str) -> Path:
     """根据参数生成缓存文件路径（parquet）。"""
-    return _cache_paths(ticker, interval, num_periods)[0]
+    return _cache_paths(ticker, interval, num_periods, source_tag)[0]
 
 
-def _cache_csv_path(ticker: str, interval: str, num_periods: int) -> Path:
+def _cache_csv_path(ticker: str, interval: str, num_periods: int, source_tag: str) -> Path:
     """根据参数生成缓存文件路径（csv）。"""
-    return _cache_paths(ticker, interval, num_periods)[1]
+    return _cache_paths(ticker, interval, num_periods, source_tag)[1]
+
+
+def _fetch_ohlcv_yahoo(ticker: str, period: str, interval: str, num_periods: int | None = None) -> pd.DataFrame:
+    """Fetch OHLCV from Yahoo Finance and normalize columns/index."""
+    yf_ticker = _normalize_ticker_for_yfinance(ticker)
+    df = yf.download(
+        yf_ticker,
+        period=period,
+        interval=interval,
+        progress=False,
+        auto_adjust=False,
+        prepost=False,
+        threads=False,
+    )
+    if df.empty:
+        raise ValueError(
+            f"未下载到数据：ticker={ticker}, period={period}, interval={interval}，"
+            "请检查网络连接或参数是否正确。"
+        )
+
+    # yfinance 有时返回 MultiIndex 列，展平为单层
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+
+    df = df[["Open", "High", "Low", "Close", "Volume"]].dropna()
+    if num_periods is not None and len(df) > num_periods:
+        df = df.iloc[-num_periods:]
+    print(f"[data] 下载 {len(df)} 行数据（{yf_ticker}, source=yfinance）。")
+    return df
 
 
 def fetch_ohlcv(
@@ -579,6 +612,7 @@ def fetch_ohlcv(
     period: str,
     interval: str,
     use_demo_data: bool = False,
+    source: str | None = None,
 ) -> pd.DataFrame:
     """下载 OHLCV 数据，或生成内置演示数据。
 
@@ -591,25 +625,17 @@ def fetch_ohlcv(
     if use_demo_data:
         return _generate_demo_data()
 
-    if _has_qveris_key():
+    prefer_qveris = (source or "").lower() == "qveris"
+    prefer_yf = (source or "").lower() == "yahoo"
+
+    if prefer_qveris and not _has_qveris_key():
+        raise ValueError("QVeris selected but QVERIS_API_KEY is not configured; please set it or choose Yahoo.")
+
+    if prefer_qveris or (_has_qveris_key() and not prefer_yf):
         num_periods = _period_to_num_periods(period, interval)
         return _fetch_ohlcv_qveris(ticker=ticker, interval=interval, num_periods=num_periods)
 
-    yf_ticker = _normalize_ticker_for_yfinance(ticker)
-    df = yf.download(yf_ticker, period=period, interval=interval, progress=False)
-    if df.empty:
-        raise ValueError(
-            f"未下载到数据：ticker={ticker}, period={period}, interval={interval}，"
-            "请检查网络连接或参数是否正确。"
-        )
-
-    # yfinance 有时返回 MultiIndex 列，展平为单层
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-
-    df = df[["Open", "High", "Low", "Close", "Volume"]].dropna()
-    print(f"[data] 下载 {len(df)} 行数据（{yf_ticker}, source=yfinance）。")
-    return df
+    return _fetch_ohlcv_yahoo(ticker=ticker, period=period, interval=interval)
 
 
 def fetch_ohlcv_cached(
@@ -618,6 +644,7 @@ def fetch_ohlcv_cached(
     num_periods: int = DEFAULT_NUM_PERIODS,
     use_offline_data: bool = False,
     force_refresh: bool = False,
+    source: str | None = None,
 ) -> pd.DataFrame:
     """下载并缓存 OHLCV 数据，支持离线读取。
 
@@ -628,8 +655,9 @@ def fetch_ohlcv_cached(
     :param force_refresh: 强制重新下载，忽略缓存（仅在线模式）
     :returns: 带有 Open/High/Low/Close/Volume 列的 DataFrame，索引为日期
     """
-    cache_parquet = _cache_path(ticker, interval, num_periods)
-    cache_csv = _cache_csv_path(ticker, interval, num_periods)
+    source_tag = (source or "auto").lower()
+    cache_parquet = _cache_path(ticker, interval, num_periods, source_tag)
+    cache_csv = _cache_csv_path(ticker, interval, num_periods, source_tag)
 
     if use_offline_data:
         if cache_parquet.exists():
@@ -648,8 +676,24 @@ def fetch_ohlcv_cached(
             f"离线模式未找到本地数据：{cache_parquet} 或 {cache_csv}，请先联网下载一次再使用离线模式。"
         )
 
-    if _has_qveris_key():
-        df = _fetch_ohlcv_qveris(ticker=ticker, interval=interval, num_periods=num_periods)
+    prefer_qveris = source_tag == "qveris"
+
+    def _read_fresh_cache() -> pd.DataFrame | None:
+        if force_refresh:
+            return None
+        for path, reader in (
+            (cache_parquet, pd.read_parquet),
+            (cache_csv, lambda p: pd.read_csv(p, parse_dates=[0], index_col=0)),
+        ):
+            if not path.exists():
+                continue
+            mtime = pd.Timestamp(os.path.getmtime(path), unit="s", tz="UTC")
+            if mtime >= pd.Timestamp.utcnow().normalize():
+                print(f"[data] 读取本地缓存：{path}")
+                return reader(path)
+        return None
+
+    def _save_cache(df: pd.DataFrame) -> None:
         _CACHE_DIR.mkdir(parents=True, exist_ok=True)
         try:
             df.to_parquet(cache_parquet)
@@ -657,45 +701,37 @@ def fetch_ohlcv_cached(
         except ImportError:
             df.to_csv(cache_csv)
             print(f"[data] 写入本地缓存（csv）：{cache_csv}")
+
+    if prefer_qveris:
+        if not _has_qveris_key():
+            raise ValueError("QVeris selected but QVERIS_API_KEY is not configured; please set it or choose Yahoo.")
+        cached = _read_fresh_cache()
+        if cached is not None:
+            return cached
+        df = _fetch_ohlcv_qveris(ticker=ticker, interval=interval, num_periods=num_periods)
+        _save_cache(df)
         return df
 
-    # 判断缓存是否有效（同一自然日内）
-    if not force_refresh and cache_parquet.exists():
-        mtime = pd.Timestamp(os.path.getmtime(cache_parquet), unit="s", tz="UTC")
-        today = pd.Timestamp.utcnow().normalize()
-        if mtime >= today:
-            print(f"[data] 读取本地缓存：{cache_parquet}")
-            return pd.read_parquet(cache_parquet)
-    if not force_refresh and cache_csv.exists():
-        mtime = pd.Timestamp(os.path.getmtime(cache_csv), unit="s", tz="UTC")
-        today = pd.Timestamp.utcnow().normalize()
-        if mtime >= today:
-            print(f"[data] 读取本地缓存：{cache_csv}")
-            df = pd.read_csv(cache_csv, parse_dates=[0], index_col=0)
+    if source_tag == "auto" and _has_qveris_key():
+        cached = _read_fresh_cache()
+        if cached is not None:
+            return cached
+        try:
+            df = _fetch_ohlcv_qveris(ticker=ticker, interval=interval, num_periods=num_periods)
+            _save_cache(df)
             return df
+        except Exception as exc:  # noqa: BLE001
+            print(f"[data] QVeris auto mode failed, fallback to Yahoo: {exc}")
+
+    # 判断缓存是否有效（同一自然日内）
+    fresh = _read_fresh_cache()
+    if fresh is not None:
+        return fresh
 
     # 查找合适的下载周期
     period = _INTERVAL_TO_PERIOD.get(interval, "1y")
-    yf_ticker = _normalize_ticker_for_yfinance(ticker)
-    df = yf.download(yf_ticker, period=period, interval=interval, progress=False)
-
-    if df.empty:
-        raise ValueError(
-            f"未下载到数据：ticker={ticker}, period={period}, interval={interval}，"
-            "请检查网络连接或参数是否正确。"
-        )
-
-    # 展平 MultiIndex 列
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-
-    df = df[["Open", "High", "Low", "Close", "Volume"]].dropna()
-
-    # 取最近 num_periods 根 K 线
-    if len(df) > num_periods:
-        df = df.iloc[-num_periods:]
-
-    print(f"[data] 下载 {len(df)} 行数据（{yf_ticker}, source=yfinance），已保存至缓存。")
+    df = _fetch_ohlcv_yahoo(ticker=ticker, period=period, interval=interval, num_periods=num_periods)
+    print("[data] Yahoo 数据已保存至缓存。")
 
     # 写缓存
     _CACHE_DIR.mkdir(parents=True, exist_ok=True)

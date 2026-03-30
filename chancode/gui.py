@@ -14,10 +14,11 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 import threading
 import tkinter as tk
-from tkinter import messagebox, scrolledtext, ttk
+from tkinter import filedialog, messagebox, scrolledtext, ttk
 from typing import Optional
 
 # 允许直接运行 `python chancode/gui.py`：
@@ -72,6 +73,12 @@ _DISPLAY_DENOISE_OPTIONS: dict[str, int] = {
     "High (near_gap=3)": 3,
 }
 
+_SOURCE_OPTIONS: dict[str, str] = {
+    "Auto (prefer QVeris)": "auto",
+    "QVeris (if available)": "qveris",
+    "Yahoo Finance": "yahoo",
+}
+
 
 def _display_denoise_label_for_value(value: int) -> str:
     for label, gap in _DISPLAY_DENOISE_OPTIONS.items():
@@ -99,6 +106,84 @@ def _format_merge_group_identifier(
     first_ts = pd.Timestamp(index[group_positions[0]])
     first_id = _format_bar_identifier(first_ts, interval)
     return f"{first_id}+{len(group_positions) - 1}"
+
+
+def _load_ohlcv_from_attachment(file_path: str, num_periods: int) -> pd.DataFrame:
+    """Load OHLC data from user attachment with columns: time/open/high/low/close."""
+    last_err: Exception | None = None
+    df_raw: pd.DataFrame | None = None
+
+    def _extract_report_rows() -> pd.DataFrame | None:
+        """Parse vendor text-report exports (.xls suffix but plain text)."""
+        nonlocal last_err
+        report_text = ""
+        for enc in ("utf-8-sig", "gb18030", "gbk"):
+            try:
+                with open(file_path, "r", encoding=enc, errors="ignore") as f:
+                    report_text = f.read()
+                if report_text.strip():
+                    break
+            except Exception as exc:  # noqa: BLE001
+                last_err = exc
+
+        if not report_text.strip():
+            return None
+
+        matches = re.findall(
+            r"(?m)^\s*(\d{4}/\d{2}/\d{2}(?:-\d{2}:\d{2})?)\s+([+-]?\d+(?:\.\d+)?)\s+([+-]?\d+(?:\.\d+)?)\s+([+-]?\d+(?:\.\d+)?)\s+([+-]?\d+(?:\.\d+)?)",
+            report_text,
+        )
+        if not matches:
+            return None
+        return pd.DataFrame(matches, columns=["Date", "Open", "High", "Low", "Close"])
+
+    # Prefer Excel parser for .xls/.xlsx; if unavailable/failed, fallback to delimited text.
+    try:
+        df_raw = pd.read_excel(file_path)
+    except Exception as exc:  # noqa: BLE001
+        last_err = exc
+
+    if df_raw is None:
+        for enc in ("utf-8-sig", "gb18030", "gbk"):
+            try:
+                df_raw = pd.read_csv(file_path, sep=None, engine="python", encoding=enc)
+                break
+            except Exception as exc:  # noqa: BLE001
+                last_err = exc
+
+    if df_raw is None or df_raw.empty:
+        df_raw = _extract_report_rows()
+
+    if df_raw is None or df_raw.empty:
+        raise ValueError(f"Failed to read attachment file: {file_path}. {last_err}")
+
+    if df_raw.shape[1] < 5:
+        raise ValueError("Attachment must contain at least 5 columns: time/open/high/low/close")
+
+    sliced = df_raw.iloc[:, :5].copy()
+    sliced.columns = ["Date", "Open", "High", "Low", "Close"]
+
+    sliced["Date"] = pd.to_datetime(sliced["Date"], errors="coerce")
+    for c in ("Open", "High", "Low", "Close"):
+        sliced[c] = pd.to_numeric(sliced[c], errors="coerce")
+
+    cleaned = sliced.dropna(subset=["Date", "Open", "High", "Low", "Close"]).copy()
+    if cleaned.empty:
+        extracted = _extract_report_rows()
+        if extracted is not None:
+            extracted["Date"] = pd.to_datetime(extracted["Date"], errors="coerce")
+            for c in ("Open", "High", "Low", "Close"):
+                extracted[c] = pd.to_numeric(extracted[c], errors="coerce")
+            cleaned = extracted.dropna(subset=["Date", "Open", "High", "Low", "Close"]).copy()
+
+    if cleaned.empty:
+        raise ValueError("Attachment has no valid rows after parsing first five columns")
+
+    cleaned["Volume"] = 0.0
+    df = cleaned.set_index("Date").sort_index()
+    if len(df) > num_periods:
+        df = df.iloc[-num_periods:]
+    return df
 
 
 class ChanApp(tk.Tk):
@@ -182,6 +267,28 @@ class ChanApp(tk.Tk):
         )
         interval_combo.pack(fill=tk.X)
 
+        ttk.Label(form, text="Data source").pack(anchor=tk.W, pady=(10, 0))
+        self._source_var = tk.StringVar(value=list(_SOURCE_OPTIONS.keys())[0])
+        source_combo = ttk.Combobox(
+            form,
+            textvariable=self._source_var,
+            values=list(_SOURCE_OPTIONS.keys()),
+            state="readonly",
+            width=18,
+        )
+        source_combo.pack(fill=tk.X)
+
+        self._use_attachment_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(form, text="Use local attachment file", variable=self._use_attachment_var).pack(
+            anchor=tk.W, pady=(10, 0)
+        )
+        ttk.Label(form, text="Attachment (time/open/high/low/close)").pack(anchor=tk.W, pady=(6, 0))
+        self._attachment_path_var = tk.StringVar(value="")
+        attachment_row = ttk.Frame(form)
+        attachment_row.pack(fill=tk.X)
+        ttk.Entry(attachment_row, textvariable=self._attachment_path_var).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Button(attachment_row, text="Browse", command=self._on_browse_attachment).pack(side=tk.LEFT, padx=(4, 0))
+
         # Number of bars (default 120)
         ttk.Label(form, text=f"Bars to download (default {DEFAULT_NUM_PERIODS})").pack(anchor=tk.W, pady=(10, 0))
         self._periods_var = tk.StringVar(value=str(DEFAULT_NUM_PERIODS))
@@ -232,6 +339,20 @@ class ChanApp(tk.Tk):
             width=18,
         )
         denoise_combo.pack(fill=tk.X)
+
+        ttk.Label(form, text="Display layers").pack(anchor=tk.W, pady=(10, 0))
+        self._show_top_var = tk.BooleanVar(value=True)
+        self._show_bottom_var = tk.BooleanVar(value=True)
+        self._show_boxes_var = tk.BooleanVar(value=True)
+        self._show_zhongshu_var = tk.BooleanVar(value=True)
+        self._show_pens_var = tk.BooleanVar(value=True)
+        self._show_segments_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(form, text="Top fractals", variable=self._show_top_var).pack(anchor=tk.W)
+        ttk.Checkbutton(form, text="Bottom fractals", variable=self._show_bottom_var).pack(anchor=tk.W)
+        ttk.Checkbutton(form, text="Merged boxes", variable=self._show_boxes_var).pack(anchor=tk.W)
+        ttk.Checkbutton(form, text="Centers (Zhongshu)", variable=self._show_zhongshu_var).pack(anchor=tk.W)
+        ttk.Checkbutton(form, text="Pens", variable=self._show_pens_var).pack(anchor=tk.W)
+        ttk.Checkbutton(form, text="Segments", variable=self._show_segments_var).pack(anchor=tk.W)
 
         ttk.Separator(parent, orient=tk.HORIZONTAL).pack(fill=tk.X, padx=8, pady=8)
 
@@ -309,6 +430,19 @@ class ChanApp(tk.Tk):
         thread = threading.Thread(target=self._run_analysis, daemon=True)
         thread.start()
 
+    def _on_browse_attachment(self) -> None:
+        """Pick local attachment file for OHLC analysis."""
+        path = filedialog.askopenfilename(
+            title="Select attachment file",
+            filetypes=[
+                ("Excel files", "*.xls *.xlsx"),
+                ("CSV/Text", "*.csv *.txt"),
+                ("All files", "*.*"),
+            ],
+        )
+        if path:
+            self._attachment_path_var.set(path)
+
     def _run_analysis(self) -> None:
         """Run full analysis in background, then update UI."""
         try:
@@ -320,6 +454,16 @@ class ChanApp(tk.Tk):
             diag_date_text = self._diag_date_var.get().strip()
             display_denoise_label = self._display_denoise_var.get().strip()
             display_near_gap = _DISPLAY_DENOISE_OPTIONS.get(display_denoise_label, 1)
+            source_label = self._source_var.get().strip()
+            source_tag = _SOURCE_OPTIONS.get(source_label, "auto")
+            use_attachment = self._use_attachment_var.get()
+            attachment_path = self._attachment_path_var.get().strip()
+            show_fractal_tops = self._show_top_var.get()
+            show_fractal_bottoms = self._show_bottom_var.get()
+            show_boxes = self._show_boxes_var.get()
+            show_zhongshu = self._show_zhongshu_var.get()
+            show_pens = self._show_pens_var.get()
+            show_segments = self._show_segments_var.get()
 
             try:
                 num_periods = int(self._periods_var.get().strip())
@@ -365,14 +509,24 @@ class ChanApp(tk.Tk):
                 f"  assess_lookahead={runtime_cfg.fractal_assess_lookahead_bars}"
                 f"  assess_lower_gap={runtime_cfg.fractal_assess_lower_level_gap_bars}\n"
             )
-
-            df = fetch_ohlcv_cached(
-                ticker,
-                interval,
-                num_periods=num_periods,
-                use_offline_data=use_offline,
-                force_refresh=False,
-            )
+            if use_attachment:
+                if not attachment_path:
+                    raise ValueError("Attachment mode enabled: please select a local file")
+                if not os.path.exists(attachment_path):
+                    raise ValueError(f"Attachment file not found: {attachment_path}")
+                self._log_append(f"Data source: attachment file\n")
+                self._log_append(f"Attachment: {attachment_path}\n")
+                df = _load_ohlcv_from_attachment(attachment_path, num_periods=num_periods)
+            else:
+                self._log_append(f"Data source: {source_tag}\n")
+                df = fetch_ohlcv_cached(
+                    ticker,
+                    interval,
+                    num_periods=num_periods,
+                    use_offline_data=use_offline,
+                    force_refresh=False,
+                    source=source_tag,
+                )
             self._log_append(f"Rows: {len(df)}\n")
 
             # K-line merge
@@ -487,6 +641,12 @@ class ChanApp(tk.Tk):
                     merged_to_original=merge_result.merged_to_original,
                     orig_to_merged_index=merge_result.orig_to_merged_index,
                     fractal_strength_labels=fractal_strength_labels,
+                    show_fractal_tops=show_fractal_tops,
+                    show_fractal_bottoms=show_fractal_bottoms,
+                    show_boxes=show_boxes,
+                    show_zhongshu=show_zhongshu,
+                    show_pens=show_pens,
+                    show_segments=show_segments,
                 ),
             )
 
@@ -557,6 +717,12 @@ class ChanApp(tk.Tk):
         merged_to_original,
         orig_to_merged_index,
         fractal_strength_labels,
+        show_fractal_tops,
+        show_fractal_bottoms,
+        show_boxes,
+        show_zhongshu,
+        show_pens,
+        show_segments,
     ) -> None:
         """在主线程渲染图表并刷新 UI。"""
         self._current_df = df
@@ -582,6 +748,12 @@ class ChanApp(tk.Tk):
             merged_indices=merged_indices,
             merged_boxes=merged_boxes,
             fractal_strength_labels=fractal_strength_labels,
+            show_fractal_tops=show_fractal_tops,
+            show_fractal_bottoms=show_fractal_bottoms,
+            show_merged_boxes=show_boxes,
+            show_pens=show_pens,
+            show_segments=show_segments,
+            show_zhongshus=show_zhongshu,
             show=False,
         )
         self._update_chart(fig)

@@ -146,71 +146,82 @@ def _has_overlap(intervals: List[tuple[float, float]]) -> bool:
 
 def build_segments(
     pens: List[Pen],
-    min_pivot_separation: int = 2,
     min_segment_pens: int = 3,
 ) -> List[Segment]:
-    """从笔序列识别线段（工程化简化版，接近缠论端点确认思路）。
+    """严格按文档核心要点划分线段。
 
-    规则：
-    1) 先在笔序列上找三笔分型确认的端点（顶/底）；
-    2) 端点需顶底交替且满足最小笔间隔；
-    3) 相邻端点间至少覆盖 min_segment_pens 根笔才形成线段。
+    规则实现要点（对应文档“至少三笔且前三笔重叠、奇数笔、首尾同向且末笔突破首笔极值”）：
+    1) 笔方向必须上下交替；
+    2) 至少三笔，前三笔必须有价格重叠区间；
+    3) 总笔数必须为奇数且首尾同向；
+    4) 对于向上段，最后一根同向笔的高点必须高于第一根同向笔的高点；向下段反之；
+    5) 使用贪心：从最左端起，找出满足条件的最长段，然后从该段倒数第二笔处继续尝试，确保连续划分。
     """
-    if len(pens) < 5:
+    if len(pens) < 3:
         return []
 
-    pivots = _detect_pen_pivots(pens)
-    pivots = _filter_alternating_pivots(pivots, min_pen_separation=min_pivot_separation)
-    if len(pivots) < 2:
-        return []
-
-    min_segment_pens = max(1, int(min_segment_pens))
+    min_segment_pens = max(3, int(min_segment_pens))  # 文档至少三笔
     segments: List[Segment] = []
+    i = 0
 
-    for i in range(len(pivots) - 1):
-        a = pivots[i]
-        b = pivots[i + 1]
-
-        if a.ptype == b.ptype:
-            continue
-        if b.pen_idx <= a.pen_idx:
-            continue
-
-        covered_pens = b.pen_idx - a.pen_idx + 1
-        if covered_pens < min_segment_pens:
+    while i + 2 < len(pens):
+        # 需要前三笔方向交替
+        if not (
+            pens[i].is_up != pens[i + 1].is_up
+            and pens[i + 1].is_up != pens[i + 2].is_up
+            and pens[i].is_up != pens[i + 2].is_up
+        ):
+            i += 1
             continue
 
-        # 线段由奇数笔构成（起止同向）
-        if covered_pens % 2 == 0:
-            continue
-
-        seg_pens = pens[a.pen_idx : b.pen_idx + 1]
-
-        # 至少前三笔必须存在价格重叠区间
-        if len(seg_pens) < 3:
-            continue
-        first_three = seg_pens[:3]
+        # 前三笔必须有价格重叠
+        first_three = pens[i : i + 3]
         if not _has_overlap([(p.low, p.high) for p in first_three]):
+            i += 1
             continue
 
-        direction = "up" if (a.ptype == "bottom" and b.ptype == "top") else "down"
+        base_dir = "up" if pens[i].is_up else "down"
+        base_extreme = pens[i].high if base_dir == "up" else pens[i].low
 
+        best_end = None
+
+        # 贪心向右扩展，要求奇数笔、首尾同向、末笔突破首笔极值
+        for j in range(i + 2, len(pens)):
+            seg_len = j - i + 1
+
+            # 必须交替方向
+            if pens[j].is_up == pens[j - 1].is_up:
+                break
+
+            # 必须奇数笔且首尾同向
+            if seg_len % 2 == 1 and pens[j].is_up == pens[i].is_up:
+                last_extreme = pens[j].high if base_dir == "up" else pens[j].low
+                if (base_dir == "up" and last_extreme > base_extreme) or (
+                    base_dir == "down" and last_extreme < base_extreme
+                ):
+                    best_end = j
+
+        if best_end is None or (best_end - i + 1) < min_segment_pens:
+            i += 1
+            continue
+
+        seg_pens = pens[i : best_end + 1]
         segment = Segment(
-            start_idx=a.idx,
-            end_idx=b.idx,
-            start_datetime=a.datetime,
-            end_datetime=b.datetime,
-            start_price=a.price,
-            end_price=b.price,
-            direction=direction,
+            start_idx=seg_pens[0].start_idx,
+            end_idx=seg_pens[-1].end_idx,
+            start_datetime=seg_pens[0].start_datetime,
+            end_datetime=seg_pens[-1].end_datetime,
+            start_price=seg_pens[0].start_price,
+            end_price=seg_pens[-1].end_price,
+            direction=base_dir,
             high=max(p.high for p in seg_pens),
             low=min(p.low for p in seg_pens),
-            pen_count=covered_pens,
+            pen_count=len(seg_pens),
         )
         segments.append(segment)
 
-    print(
-        f"[xd] 识别线段 {len(segments)} 条"
-        f"（pivot_sep={min_pivot_separation}, min_segment_pens={min_segment_pens}）。"
-    )
+        # 允许下一段从倒数第二笔开始尝试，避免错过跨界重叠
+        i = best_end - 1
+
+    print(f"[xd] 识别线段 {len(segments)} 条（min_segment_pens={min_segment_pens}）。")
     return segments

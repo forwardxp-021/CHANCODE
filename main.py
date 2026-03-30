@@ -68,7 +68,7 @@ def main() -> None:
         fractals_for_bi = build_fractals_for_bi(
             fractals_all_merged,
             min_separation=cfg.fractal_min_separation,
-            min_pen_separation=cfg.min_bi_separation,
+            min_pen_separation=cfg.min_pen_separation,
         )
         fractals_for_plot = map_fractals_to_original(
             fractals_all_merged,

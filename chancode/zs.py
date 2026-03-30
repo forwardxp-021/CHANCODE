@@ -27,6 +27,13 @@ class Zhongshu:
     high: float
     confirm_idx: int = -1
     confirm_datetime: Optional[pd.Timestamp] = None
+    direction: str = ""  # "up" 或 "down"
+    zg: float | None = None
+    zd: float | None = None
+    gg: float | None = None
+    dd: float | None = None
+    g: float | None = None  # 最小 g_n
+    d: float | None = None  # 最大 d_n
 
 
 def _range_overlap(
@@ -78,8 +85,39 @@ def detect_zhongshu_with_basis(
     zhongshus: List[Zhongshu] = []
     i = 0
 
+    def _direction(u) -> str:
+        return "up" if u.is_up else "down"
+
+    def _update_metrics(zh: Zhongshu, dir_units: List) -> None:
+        highs = [u.high for u in dir_units]
+        lows = [u.low for u in dir_units]
+        if highs and lows:
+            zh.gg = max(highs)
+            zh.dd = min(lows)
+            zh.g = min(highs) if len(highs) > 0 else None  # type: ignore[attr-defined]
+            zh.d = max(lows) if len(lows) > 0 else None    # type: ignore[attr-defined]
+            first_two = dir_units[:2]
+            if len(first_two) >= 2:
+                g1, g2 = first_two[0].high, first_two[1].high
+                d1, d2 = first_two[0].low, first_two[1].low
+                zh.zg = min(g1, g2)
+                zh.zd = max(d1, d2)
+            else:
+                zh.zg = zh.high
+                zh.zd = zh.low
+
     while i <= len(units) - 3:
         window = units[i : i + 3]
+
+        # 要求方向交替且首尾同向，符合上-下-上或下-上-下的基本模式。
+        if not (
+            window[0].is_up != window[1].is_up
+            and window[1].is_up != window[2].is_up
+            and window[0].is_up == window[2].is_up
+        ):
+            i += 1
+            continue
+
         overlap = _range_overlap([(u.low, u.high) for u in window])
         if overlap is None:
             i += 1
@@ -87,6 +125,9 @@ def detect_zhongshu_with_basis(
 
         lo, hi = overlap
         third = window[-1]
+        zh_direction = _direction(window[0])
+        dir_units = [u for u in window if _direction(u) == zh_direction]
+
         zh = Zhongshu(
             start_idx=window[0].start_idx,
             end_idx=third.end_idx,
@@ -96,7 +137,9 @@ def detect_zhongshu_with_basis(
             high=hi,
             confirm_idx=third.end_idx,
             confirm_datetime=third.end_datetime,
+            direction=zh_direction,
         )
+        _update_metrics(zh, dir_units)
 
         j = i + 3
         while j < len(units):
@@ -105,9 +148,25 @@ def detect_zhongshu_with_basis(
                 break
             zh.end_idx = unit.end_idx
             zh.end_datetime = unit.end_datetime
+            if _direction(unit) == zh_direction:
+                dir_units.append(unit)
+                _update_metrics(zh, dir_units)
             j += 1
 
-        zhongshus.append(zh)
+        # 合并与上一中枢区间重叠的情况
+        if zhongshus and _range_overlap([(zhongshus[-1].low, zhongshus[-1].high), (zh.low, zh.high)]):
+            prev = zhongshus[-1]
+            prev.end_idx = max(prev.end_idx, zh.end_idx)
+            prev.end_datetime = max(prev.end_datetime, zh.end_datetime)
+            prev.low = max(prev.low, zh.low)
+            prev.high = min(prev.high, zh.high)
+            prev.direction = prev.direction or zh.direction
+            prev.zg = prev.zg if prev.zg is not None else zh.zg
+            prev.zd = prev.zd if prev.zd is not None else zh.zd
+            prev.gg = prev.gg if prev.gg is not None else zh.gg
+            prev.dd = prev.dd if prev.dd is not None else zh.dd
+        else:
+            zhongshus.append(zh)
 
         # 从破坏点附近重新搜索，允许后续形成新中枢。
         i = max(j - 2, i + 1)

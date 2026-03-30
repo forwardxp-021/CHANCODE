@@ -43,7 +43,7 @@ def test_build_segments_direction_and_sparsity():
         _pen(6, 48, 56, 12, 28),
         _pen(7, 56, 64, 28, 11),
     ]
-    segments = build_segments(pens, min_pivot_separation=1, min_segment_pens=3)
+    segments = build_segments(pens, min_segment_pens=3)
 
     assert len(segments) < len(pens)
     for seg in segments:

@@ -346,7 +346,7 @@ def cluster_fractals_for_display(
 def build_fractals_for_bi(
     fractals: List[FractalPoint],
     min_separation: int = 3,
-    min_pen_separation: int = 7,
+    min_pen_separation: int = 3,
 ) -> List[FractalPoint]:
     """分型去重、交替与有效性约束。
 
@@ -373,6 +373,10 @@ def build_fractals_for_bi(
         if f.ftype == last.ftype:
             if _is_more_extreme(f, last):
                 alternating[-1] = f
+            elif (f.ftype == "top" and f.high == last.high) or (
+                f.ftype == "bottom" and f.low == last.low
+            ):
+                alternating.append(f)
         else:
             alternating.append(f)
 
@@ -388,6 +392,10 @@ def build_fractals_for_bi(
         if f.ftype == last.ftype:
             if _is_more_extreme(f, last):
                 compact[-1] = f
+            elif (f.ftype == "top" and f.high == last.high) or (
+                f.ftype == "bottom" and f.low == last.low
+            ):
+                compact.append(f)
             continue
 
         if (f.idx - last.idx) >= min_separation:
@@ -414,6 +422,10 @@ def build_fractals_for_bi(
         if f.ftype == last.ftype:
             if _is_more_extreme(f, last):
                 final[-1] = f
+            elif (f.ftype == "top" and f.high == last.high) or (
+                f.ftype == "bottom" and f.low == last.low
+            ):
+                final.append(f)
             continue
 
         if (f.idx - last.idx) >= min_pen_separation:
@@ -438,7 +450,7 @@ def build_fractals_for_bi(
 def filter_and_alternate_fractals(
     fractals: List[FractalPoint],
     min_separation: int = 3,
-    min_pen_separation: int = 7,
+    min_pen_separation: int = 3,
 ) -> List[FractalPoint]:
     """兼容旧接口：等价于 build_fractals_for_bi。"""
     return build_fractals_for_bi(
