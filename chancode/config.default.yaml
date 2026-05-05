@@ -2,13 +2,13 @@ chan:
   # 成笔最小间距（单位：合并后K线根数）。
   # 作用位置：build_pens 的 min_kline_count（最终成笔硬约束）。
   # 数值越大：笔更稀疏、拐点更“稳”；数值越小：笔更密集、对短波动更敏感。
-  # 文档要求“顶底之间至少有一根非分型K线”，对应中心间距至少为 3。
-  min_bi_separation: 3
+  # 标准笔要求顶底之间至少留出足够的独立K线，默认使用中心间距至少为 4。
+  min_bi_separation: 4
 
   # 成笔前分型二次筛选的最小间距（单位：合并后K线根数）。
   # 作用位置：build_fractals_for_bi 的 min_pen_separation。
   # 用于保证留下的分型对能够满足成笔距离要求，避免过近反转形成伪笔。
-  min_pen_separation: 3
+  min_pen_separation: 4
 
   # 分型识别是否允许“相等高低点”（平顶/平底）。
   # true ：更容易识别分型，信号更多；
@@ -28,8 +28,8 @@ chan:
   # 这是“噪声反转过滤阈值”，与 min_bi_separation 不同：
   # - min_bi_separation 控制“能不能成笔”
   # - fractal_min_separation 控制“分型是否先被保留到成笔阶段”
-  # 若你希望 2025-09-26(+1) -> 2025-10-14 这类短距离连接出现，
-  # 往往需要把该值从 3 调到 2（仅调 min_bi_separation 往往不够）。
+  # 若你希望短距离连接出现，往往需要同时下调 min_pen_separation
+  # 和 min_bi_separation（仅调其中一个往往不够）。
   fractal_min_separation: 2
 
   # 分型强度评估前瞻窗口（单位：合并后K线根数）。

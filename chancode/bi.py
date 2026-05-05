@@ -9,7 +9,7 @@ from typing import List, Optional
 
 import pandas as pd
 
-from chancode.fractal import FractalPoint
+from chancode.fractal import FractalPoint, MergeKlineResult
 from chancode.config import Config
 
 
@@ -54,7 +54,7 @@ def build_pens(
     成笔条件：
     1) 起止分型必须为异类型；
     2) 起止分型索引间隔 >= min_kline_count（合并K线数量约束）；
-    3) 价格区间必须有重叠，避免“顶在底下方”的伪笔。
+    3) 价格方向必须与分型类型一致：bottom->top 必须上涨，top->bottom 必须下跌。
     """
     pens: List[Pen] = []
 
@@ -93,13 +93,21 @@ def build_pens(
                 print(f"[bi] 跳过异常分型序列: {a.ftype}->{b.ftype} at {a.idx}->{b.idx}")
                 continue
 
-            high = max(a.high, b.high)
-            low = min(a.low, b.low)
-            if high <= low:
+            if a.ftype == "bottom" and b.ftype == "top" and b.price <= a.price:
                 print(
-                    f"[bi] 跳过无价格重叠的分型: {a.ftype}->{b.ftype} high={high} low={low}"
+                    f"[bi] 跳过价格方向错误的上升笔: {a.idx}->{b.idx} "
+                    f"price={a.price}->{b.price}"
                 )
                 continue
+            if a.ftype == "top" and b.ftype == "bottom" and b.price >= a.price:
+                print(
+                    f"[bi] 跳过价格方向错误的下降笔: {a.idx}->{b.idx} "
+                    f"price={a.price}->{b.price}"
+                )
+                continue
+
+            high = max(a.high, b.high)
+            low = min(a.low, b.low)
 
             pens.append(
                 Pen(
@@ -125,3 +133,66 @@ def build_pens(
 
     print(f"[bi] 构建笔 {len(pens)} 条（min_kline_count={min_kline_count}）。")
     return pens
+
+
+def map_pens_to_original(
+    pens: List[Pen],
+    merge_result: MergeKlineResult,
+    original_index: pd.Index,
+    original_df: pd.DataFrame,
+) -> List[Pen]:
+    """将基于合并K线的笔端点映射回原始K线极值位置，用于绘图显示。"""
+    mapped: List[Pen] = []
+
+    def _endpoint(idx: int, ftype: str, fallback_dt: pd.Timestamp, fallback_price: float):
+        if idx < 0 or idx >= len(merge_result.merged_to_original):
+            return idx, fallback_dt, fallback_price
+
+        group = merge_result.merged_to_original[idx]
+        if not group:
+            return idx, fallback_dt, fallback_price
+
+        if ftype == "top":
+            orig_pos = max(group, key=lambda pos: float(original_df["High"].iloc[pos]))
+            price = float(original_df["High"].iloc[orig_pos])
+        elif ftype == "bottom":
+            orig_pos = min(group, key=lambda pos: float(original_df["Low"].iloc[pos]))
+            price = float(original_df["Low"].iloc[orig_pos])
+        else:
+            orig_pos = group[-1]
+            price = fallback_price
+
+        if orig_pos < 0 or orig_pos >= len(original_index):
+            return idx, fallback_dt, fallback_price
+        return orig_pos, pd.Timestamp(original_index[orig_pos]), price
+
+    for pen in pens:
+        start_idx, start_dt, start_price = _endpoint(
+            pen.start_idx,
+            pen.start_ftype,
+            pen.start_datetime,
+            pen.start_price,
+        )
+        end_idx, end_dt, end_price = _endpoint(
+            pen.end_idx,
+            pen.end_ftype,
+            pen.end_datetime,
+            pen.end_price,
+        )
+        mapped.append(
+            Pen(
+                start_idx=start_idx,
+                end_idx=end_idx,
+                start_datetime=start_dt,
+                end_datetime=end_dt,
+                start_price=start_price,
+                end_price=end_price,
+                high=max(start_price, end_price),
+                low=min(start_price, end_price),
+                start_ftype=pen.start_ftype,
+                end_ftype=pen.end_ftype,
+                is_complete=pen.is_complete,
+            )
+        )
+
+    return mapped

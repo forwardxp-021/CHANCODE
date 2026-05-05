@@ -12,8 +12,8 @@ import yaml
 class Config:
     """Runtime configuration values used by core structure extraction."""
 
-    min_bi_separation: int = 3
-    min_pen_separation: int = 3
+    min_bi_separation: int = 4
+    min_pen_separation: int = 4
     fractal_allow_equal: bool = True
     display_near_gap: int = 1
     fractal_min_separation: int = 2
@@ -87,8 +87,8 @@ def load_config(path: str | None = None) -> Config:
 
     chan = raw.get("chan", {}) if isinstance(raw, dict) else {}
     cfg = Config(
-        min_bi_separation=int(chan.get("min_bi_separation", 3)),
-        min_pen_separation=int(chan.get("min_pen_separation", 3)),
+        min_bi_separation=int(chan.get("min_bi_separation", 4)),
+        min_pen_separation=int(chan.get("min_pen_separation", 4)),
         fractal_allow_equal=bool(chan.get("fractal_allow_equal", True)),
         display_near_gap=int(chan.get("display_near_gap", 1)),
         fractal_min_separation=int(chan.get("fractal_min_separation", 2)),

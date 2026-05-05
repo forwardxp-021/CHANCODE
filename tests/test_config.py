@@ -22,8 +22,8 @@ def test_load_default_config_when_project_override_missing():
 
     try:
         cfg = load_config()
-        assert cfg.min_bi_separation == 3
-        assert cfg.min_pen_separation == 3
+        assert cfg.min_bi_separation == 4
+        assert cfg.min_pen_separation == 4
         assert cfg.fractal_allow_equal is True
         assert cfg.display_near_gap == 1
         assert cfg.fractal_min_separation == 2

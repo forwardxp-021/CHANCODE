@@ -25,7 +25,7 @@ from chancode.fractal import (
   map_fractals_to_original,
   merge_klines,
 )
-from chancode.bi import Pen, build_pens
+from chancode.bi import Pen, build_pens, map_pens_to_original
 from chancode.xd import Segment, build_segments
 from chancode.zs import Zhongshu, detect_zhongshu, detect_zhongshu_with_basis
 from chancode.signal import detect_buy_sell_points, BuySellPoint
@@ -45,6 +45,7 @@ __all__ = [
     "merge_klines",
     "Pen",
     "build_pens",
+    "map_pens_to_original",
     "Segment",
     "build_segments",
     "Zhongshu",

@@ -355,7 +355,7 @@ def cluster_fractals_for_display(
 def build_fractals_for_bi(
     fractals: List[FractalPoint],
     min_separation: int = 3,
-    min_pen_separation: int = 3,
+    min_pen_separation: int = 4,
 ) -> List[FractalPoint]:
     """分型去重、交替与有效性约束。
 
@@ -462,7 +462,7 @@ def build_fractals_for_bi(
 def filter_and_alternate_fractals(
     fractals: List[FractalPoint],
     min_separation: int = 3,
-    min_pen_separation: int = 3,
+    min_pen_separation: int = 4,
 ) -> List[FractalPoint]:
     """兼容旧接口：等价于 build_fractals_for_bi。"""
     return build_fractals_for_bi(

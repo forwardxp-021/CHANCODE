@@ -53,7 +53,7 @@ from chancode.fractal import (
     map_fractals_to_original,
     merge_klines,
 )
-from chancode.bi import build_pens
+from chancode.bi import build_pens, map_pens_to_original
 from chancode.xd import build_segments
 from chancode.zs import detect_zhongshu_with_basis
 from chancode.signal import detect_buy_sell_points
@@ -505,6 +505,7 @@ class ChanApp(tk.Tk):
             zh_level = self._zh_level_var.get().strip().lower()
             runtime_cfg = Config(
                 min_bi_separation=min_bi_sep,
+                min_pen_separation=min_bi_sep,
                 fractal_allow_equal=self._base_config.fractal_allow_equal,
                 display_near_gap=display_near_gap,
                 fractal_min_separation=self._base_config.fractal_min_separation,
@@ -522,6 +523,7 @@ class ChanApp(tk.Tk):
                 f"  bars={num_periods}"
                 f"  realtime={'on' if realtime_mode else 'off'}"
                 f"  min_bi_sep={runtime_cfg.min_bi_separation}"
+                f"  min_pen_sep={runtime_cfg.min_pen_separation}"
                 f"  zh_level={runtime_cfg.zhongshu_level}"
                 f"  display_near_gap={runtime_cfg.display_near_gap}"
                 f"  fractal_min_sep={runtime_cfg.fractal_min_separation}"
@@ -593,9 +595,9 @@ class ChanApp(tk.Tk):
             )
 
             fractals_for_bi = build_fractals_for_bi(
-                fractals_all_merged,
+                raw,
                 min_separation=runtime_cfg.fractal_min_separation,
-                min_pen_separation=runtime_cfg.min_bi_separation,
+                min_pen_separation=runtime_cfg.min_pen_separation,
             )
             fractals_for_plot = map_fractals_to_original(
                 fractals_all_merged,
@@ -631,6 +633,12 @@ class ChanApp(tk.Tk):
                 )
 
             pens = build_pens(fractals_for_bi, config=runtime_cfg)
+            pens_for_plot = map_pens_to_original(
+                pens,
+                merge_result,
+                original_index=df.index,
+                original_df=df,
+            )
             self._log_append(f"Pens: {len(pens)}\n")
 
             segments = build_segments(pens)
@@ -652,7 +660,7 @@ class ChanApp(tk.Tk):
                 lambda: self._finish_analysis_render(
                     df=df,
                     fractals_for_plot=fractals_for_plot,
-                    pens=pens,
+                    pens=pens_for_plot,
                     segments=segments,
                     zhongshus=zhongshus,
                     buys=buys,

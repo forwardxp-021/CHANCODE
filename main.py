@@ -45,7 +45,7 @@ def main() -> None:
             map_fractals_to_original,
             merge_klines,
         )
-        from chancode.bi import build_pens
+        from chancode.bi import build_pens, map_pens_to_original
         from chancode.xd import build_segments
         from chancode.zs import detect_zhongshu_with_basis
         from chancode.signal import detect_buy_sell_points
@@ -66,7 +66,7 @@ def main() -> None:
             near_gap=cfg.display_near_gap,
         )
         fractals_for_bi = build_fractals_for_bi(
-            fractals_all_merged,
+            raw_fractals,
             min_separation=cfg.fractal_min_separation,
             min_pen_separation=cfg.min_pen_separation,
         )
@@ -79,6 +79,12 @@ def main() -> None:
         )
 
         pens = build_pens(fractals_for_bi, config=cfg)
+        pens_for_plot = map_pens_to_original(
+            pens,
+            merge_result,
+            original_index=df.index,
+            original_df=df,
+        )
         segments = build_segments(pens)
         zhongshus = detect_zhongshu_with_basis(
             pens,
@@ -97,7 +103,7 @@ def main() -> None:
         plot_chan(
             df,
             fractals_for_plot,
-            pens,
+            pens_for_plot,
             segments,
             zhongshus,
             buys,
