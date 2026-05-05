@@ -4,6 +4,7 @@ from __future__ import annotations
 import pandas as pd
 
 from chancode.fractal import (
+    FractalPoint,
     detect_fractals,
     cluster_fractals_for_display,
     build_fractals_for_bi,
@@ -189,4 +190,26 @@ def test_merge_klines_uses_group_envelope_for_containment():
 
     # 最后一个 bar（idx=7）被前面的包含组整体包住，应并入同一组。
     assert [3, 4, 5, 6, 7] in groups
+
+
+def test_near_opposite_noise_does_not_swallow_valid_top_fractal():
+    # 回归场景：有效顶分型后出现近邻反向噪声，不应吞掉该顶分型。
+    # 该序列包含前后文，模拟成笔筛选时的真实链路。
+    base = pd.Timestamp("1993-01-01")
+    seq = [
+        FractalPoint(8, base + pd.Timedelta(days=8), "top", high=1400.0, low=1000.0),
+        FractalPoint(12, base + pd.Timedelta(days=12), "bottom", high=900.0, low=500.0),
+        FractalPoint(20, base + pd.Timedelta(days=20), "top", high=1558.95, low=1196.47),
+        FractalPoint(21, base + pd.Timedelta(days=21), "bottom", high=1339.10, low=913.74),
+        FractalPoint(22, base + pd.Timedelta(days=22), "top", high=1392.62, low=930.64),
+        FractalPoint(24, base + pd.Timedelta(days=24), "bottom", high=1009.89, low=777.73),
+        FractalPoint(30, base + pd.Timedelta(days=30), "top", high=1300.0, low=900.0),
+        FractalPoint(36, base + pd.Timedelta(days=36), "bottom", high=980.0, low=760.0),
+    ]
+
+    clustered = cluster_fractals_for_display(seq, near_gap=2)
+    assert any(f.ftype == "top" and f.idx == 20 for f in clustered)
+
+    for_bi = build_fractals_for_bi(clustered, min_separation=3, min_pen_separation=4)
+    assert any(f.ftype == "top" and f.idx == 20 for f in for_bi)
 

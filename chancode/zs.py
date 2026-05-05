@@ -34,6 +34,9 @@ class Zhongshu:
     dd: float | None = None
     g: float | None = None  # 最小 g_n
     d: float | None = None  # 最大 d_n
+    terminated_idx: int | None = None
+    terminated_datetime: Optional[pd.Timestamp] = None
+    terminated_reason: str = ""
 
 
 def _range_overlap(
@@ -43,6 +46,14 @@ def _range_overlap(
     lows, highs = zip(*ranges)
     lo, hi = max(lows), min(highs)
     return (lo, hi) if lo <= hi else None
+
+
+def _is_unit_complete(unit: object) -> bool:
+    """是否为已完成的次级走势单元。
+
+    兼容历史对象：若未定义 is_complete 字段，默认视为已完成。
+    """
+    return bool(getattr(unit, "is_complete", True))
 
 
 def detect_zhongshu(pens: List[Pen]) -> List[Zhongshu]:
@@ -94,82 +105,134 @@ def detect_zhongshu_with_basis(
         if highs and lows:
             zh.gg = max(highs)
             zh.dd = min(lows)
-            zh.g = min(highs) if len(highs) > 0 else None  # type: ignore[attr-defined]
-            zh.d = max(lows) if len(lows) > 0 else None    # type: ignore[attr-defined]
-            first_two = dir_units[:2]
-            if len(first_two) >= 2:
-                g1, g2 = first_two[0].high, first_two[1].high
-                d1, d2 = first_two[0].low, first_two[1].low
+            zh.g = min(highs)
+            zh.d = max(lows)
+            if len(dir_units) >= 2:
+                g1, g2 = dir_units[0].high, dir_units[1].high
+                d1, d2 = dir_units[0].low, dir_units[1].low
                 zh.zg = min(g1, g2)
                 zh.zd = max(d1, d2)
             else:
                 zh.zg = zh.high
                 zh.zd = zh.low
 
-    while i <= len(units) - 3:
-        window = units[i : i + 3]
+    active: Zhongshu | None = None
+    active_dir_units: List = []
+    left_pending = False
 
-        # 要求方向交替且首尾同向，符合上-下-上或下-上-下的基本模式。
-        if not (
-            window[0].is_up != window[1].is_up
-            and window[1].is_up != window[2].is_up
-            and window[0].is_up == window[2].is_up
-        ):
-            i += 1
-            continue
-
-        overlap = _range_overlap([(u.low, u.high) for u in window])
-        if overlap is None:
-            i += 1
-            continue
-
-        lo, hi = overlap
-        third = window[-1]
-        zh_direction = _direction(window[0])
-        dir_units = [u for u in window if _direction(u) == zh_direction]
-
-        zh = Zhongshu(
-            start_idx=window[0].start_idx,
-            end_idx=third.end_idx,
-            start_datetime=window[0].start_datetime,
-            end_datetime=third.end_datetime,
-            low=lo,
-            high=hi,
-            confirm_idx=third.end_idx,
-            confirm_datetime=third.end_datetime,
-            direction=zh_direction,
-        )
-        _update_metrics(zh, dir_units)
-
-        j = i + 3
-        while j < len(units):
-            unit = units[j]
-            if _range_overlap([(zh.low, zh.high), (unit.low, unit.high)]) is None:
+    while i < len(units):
+        if active is None:
+            if i + 2 >= len(units):
                 break
-            zh.end_idx = unit.end_idx
-            zh.end_datetime = unit.end_datetime
-            if _direction(unit) == zh_direction:
-                dir_units.append(unit)
-                _update_metrics(zh, dir_units)
-            j += 1
+            window = units[i : i + 3]
+            if not all(_is_unit_complete(u) for u in window):
+                i += 1
+                continue
+            if not (
+                window[0].is_up != window[1].is_up
+                and window[1].is_up != window[2].is_up
+                and window[0].is_up == window[2].is_up
+            ):
+                i += 1
+                continue
 
-        # 合并与上一中枢区间重叠的情况
-        if zhongshus and _range_overlap([(zhongshus[-1].low, zhongshus[-1].high), (zh.low, zh.high)]):
+            overlap = _range_overlap([(u.low, u.high) for u in window])
+            if overlap is None:
+                i += 1
+                continue
+
+            lo, hi = overlap
+            third = window[-1]
+            zh_direction = _direction(window[0])
+            active_dir_units = [u for u in window if _direction(u) == zh_direction]
+
+            active = Zhongshu(
+                start_idx=window[0].start_idx,
+                end_idx=third.end_idx,
+                start_datetime=window[0].start_datetime,
+                end_datetime=third.end_datetime,
+                low=lo,
+                high=hi,
+                confirm_idx=third.end_idx,
+                confirm_datetime=third.end_datetime,
+                direction=zh_direction,
+            )
+            _update_metrics(active, active_dir_units)
+            i = i + 3
+            left_pending = False
+            continue
+
+        unit = units[i]
+        if not _is_unit_complete(unit):
+            i += 1
+            continue
+        overlap = _range_overlap([(active.low, active.high), (unit.low, unit.high)])
+        if overlap is not None:
+            active.end_idx = unit.end_idx
+            active.end_datetime = unit.end_datetime
+            if _direction(unit) == active.direction:
+                active_dir_units.append(unit)
+                _update_metrics(active, active_dir_units)
+            left_pending = False
+            i += 1
+            continue
+
+        # 第一次离开，等待回抽；第二次仍不重叠则终结当前中枢。
+        if not left_pending:
+            left_pending = True
+            i += 1
+            continue
+
+        # 终结当前中枢，尝试从前两个单元重新启动。
+        exit_unit = units[i - 1]
+        active.terminated_idx = exit_unit.end_idx
+        active.terminated_datetime = exit_unit.end_datetime
+        active.terminated_reason = "leave_no_reentry"
+        if zhongshus and _range_overlap([(zhongshus[-1].low, zhongshus[-1].high), (active.low, active.high)]):
             prev = zhongshus[-1]
-            prev.end_idx = max(prev.end_idx, zh.end_idx)
-            prev.end_datetime = max(prev.end_datetime, zh.end_datetime)
-            prev.low = max(prev.low, zh.low)
-            prev.high = min(prev.high, zh.high)
-            prev.direction = prev.direction or zh.direction
-            prev.zg = prev.zg if prev.zg is not None else zh.zg
-            prev.zd = prev.zd if prev.zd is not None else zh.zd
-            prev.gg = prev.gg if prev.gg is not None else zh.gg
-            prev.dd = prev.dd if prev.dd is not None else zh.dd
+            prev.end_idx = max(prev.end_idx, active.end_idx)
+            prev.end_datetime = max(prev.end_datetime, active.end_datetime)
+            prev.low = max(prev.low, active.low)
+            prev.high = min(prev.high, active.high)
+            prev.direction = prev.direction or active.direction
+            prev.zg = prev.zg if prev.zg is not None else active.zg
+            prev.zd = prev.zd if prev.zd is not None else active.zd
+            prev.gg = prev.gg if prev.gg is not None else active.gg
+            prev.dd = prev.dd if prev.dd is not None else active.dd
+            prev.g = prev.g if prev.g is not None else active.g
+            prev.d = prev.d if prev.d is not None else active.d
+            if prev.terminated_idx is None:
+                prev.terminated_idx = active.terminated_idx
+                prev.terminated_datetime = active.terminated_datetime
+                prev.terminated_reason = active.terminated_reason
         else:
-            zhongshus.append(zh)
+            zhongshus.append(active)
 
-        # 从破坏点附近重新搜索，允许后续形成新中枢。
-        i = max(j - 2, i + 1)
+        active = None
+        active_dir_units = []
+        left_pending = False
+        i = max(i - 2, 0)
+
+    if active is not None:
+        if zhongshus and _range_overlap([(zhongshus[-1].low, zhongshus[-1].high), (active.low, active.high)]):
+            prev = zhongshus[-1]
+            prev.end_idx = max(prev.end_idx, active.end_idx)
+            prev.end_datetime = max(prev.end_datetime, active.end_datetime)
+            prev.low = max(prev.low, active.low)
+            prev.high = min(prev.high, active.high)
+            prev.direction = prev.direction or active.direction
+            prev.zg = prev.zg if prev.zg is not None else active.zg
+            prev.zd = prev.zd if prev.zd is not None else active.zd
+            prev.gg = prev.gg if prev.gg is not None else active.gg
+            prev.dd = prev.dd if prev.dd is not None else active.dd
+            prev.g = prev.g if prev.g is not None else active.g
+            prev.d = prev.d if prev.d is not None else active.d
+            if prev.terminated_idx is None:
+                prev.terminated_idx = active.terminated_idx
+                prev.terminated_datetime = active.terminated_datetime
+                prev.terminated_reason = active.terminated_reason
+        else:
+            zhongshus.append(active)
 
     print(f"[zs] 识别中枢 {len(zhongshus)} 个（level={basis}）。")
     return zhongshus

@@ -1,8 +1,8 @@
 """main.py – 缠论量化分析系统命令行入口。
 
 示例：
-    # 分析 AAPL，1 年日线，弹窗显示
-    python main.py --ticker AAPL --period 1y --interval 1d
+    # 分析 601800，1 年日线，弹窗显示（默认通达信接口）
+    python main.py --ticker 601800 --period 1y --interval 1d
 
     # 使用演示数据，保存图片
     python main.py --demo --out result.png

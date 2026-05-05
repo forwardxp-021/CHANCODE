@@ -17,6 +17,7 @@ import os
 import re
 import sys
 import threading
+import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 from typing import Optional
@@ -49,7 +50,6 @@ from chancode.fractal import (
     cluster_fractals_for_display,
     build_fractals_for_bi,
     assess_fractals,
-    diagnose_fractal_bar,
     map_fractals_to_original,
     merge_klines,
 )
@@ -59,7 +59,7 @@ from chancode.zs import detect_zhongshu_with_basis
 from chancode.signal import detect_buy_sell_points
 from chancode.chart import plot_chan
 
-# Interval options: display name -> yfinance interval code
+# Interval options: display name -> TDX period code
 _INTERVAL_OPTIONS: dict[str, str] = {
     "5 min":  "5m",
     "30 min": "30m",
@@ -73,18 +73,46 @@ _DISPLAY_DENOISE_OPTIONS: dict[str, int] = {
     "High (near_gap=3)": 3,
 }
 
-_SOURCE_OPTIONS: dict[str, str] = {
-    "Auto (prefer QVeris)": "auto",
-    "QVeris (if available)": "qveris",
-    "Yahoo Finance": "yahoo",
-}
-
-
 def _display_denoise_label_for_value(value: int) -> str:
     for label, gap in _DISPLAY_DENOISE_OPTIONS.items():
         if gap == value:
             return label
-    return "Low (near_gap=1)"
+    return "Medium (near_gap=2)"
+
+
+def _normalize_ticker_for_tdx(ticker: str) -> str:
+    t = (ticker or "").strip().upper()
+    if not t:
+        return t
+    if "." in t:
+        return t
+    if len(t) == 6 and t.isdigit():
+        return f"{t}.SH" if t.startswith(("6", "9")) else f"{t}.SZ"
+    return t
+
+
+def _resample_ohlcv(df: pd.DataFrame, rule: str, bars: int) -> pd.DataFrame:
+    """Resample OHLCV and keep latest bars."""
+    if df.empty:
+        return df
+    agg = (
+        df.sort_index()
+        .resample(rule, label="right", closed="right")
+        .agg(
+            {
+                "Open": "first",
+                "High": "max",
+                "Low": "min",
+                "Close": "last",
+                "Volume": "sum",
+            }
+        )
+        .dropna(subset=["Open", "High", "Low", "Close"])
+    )
+    if len(agg) > bars:
+        agg = agg.iloc[-bars:]
+    agg.index.name = "Date"
+    return agg
 
 
 def _format_bar_identifier(ts: pd.Timestamp, interval: str) -> str:
@@ -211,11 +239,21 @@ class ChanApp(tk.Tk):
         self._merged_to_original_groups: list[list[int]] = []
         self._orig_to_merged_index: list[int] = []
         self._last_hover_idx: Optional[int] = None
+        self._mouse_in_chart: bool = False
+        self._analysis_running: bool = False
+
+        self._rt_active: bool = False
+        self._rt_ticker: str = ""
+        self._rt_callback = None
+        self._rt_refresh_pending: bool = False
+        self._rt_last_refresh_ts: float = 0.0
 
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.bind("<Escape>", lambda _e: self._on_close())
         self.bind("<Control-q>", lambda _e: self._on_close())
+        self.bind_all("<Up>", self._on_key_up)
+        self.bind_all("<Down>", self._on_key_down)
 
     # ─── UI 构建 ────────────────────────────────────────────────────────────
 
@@ -267,17 +305,6 @@ class ChanApp(tk.Tk):
         )
         interval_combo.pack(fill=tk.X)
 
-        ttk.Label(form, text="Data source").pack(anchor=tk.W, pady=(10, 0))
-        self._source_var = tk.StringVar(value=list(_SOURCE_OPTIONS.keys())[0])
-        source_combo = ttk.Combobox(
-            form,
-            textvariable=self._source_var,
-            values=list(_SOURCE_OPTIONS.keys()),
-            state="readonly",
-            width=18,
-        )
-        source_combo.pack(fill=tk.X)
-
         self._use_attachment_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(form, text="Use local attachment file", variable=self._use_attachment_var).pack(
             anchor=tk.W, pady=(10, 0)
@@ -317,19 +344,16 @@ class ChanApp(tk.Tk):
             anchor=tk.W, pady=(10, 0)
         )
 
-        # Fractal diagnostics
-        self._diag_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(form, text="Enable fractal diagnostics", variable=self._diag_var).pack(
+        # Realtime mode
+        self._realtime_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(form, text="Realtime mode (subscribe_hq)", variable=self._realtime_var).pack(
             anchor=tk.W, pady=(10, 0)
         )
-        ttk.Label(form, text="Diagnostic date (YYYY-MM-DD)").pack(anchor=tk.W, pady=(6, 0))
-        self._diag_date_var = tk.StringVar(value="")
-        ttk.Entry(form, textvariable=self._diag_date_var).pack(fill=tk.X)
 
         # Display fractal denoise strength
         ttk.Label(form, text="Display fractal denoise").pack(anchor=tk.W, pady=(10, 0))
         self._display_denoise_var = tk.StringVar(
-            value=_display_denoise_label_for_value(self._base_config.display_near_gap)
+            value="Medium (near_gap=2)"
         )
         denoise_combo = ttk.Combobox(
             form,
@@ -425,6 +449,9 @@ class ChanApp(tk.Tk):
 
     def _on_run(self) -> None:
         """Analyze in background to avoid blocking UI."""
+        if self._analysis_running:
+            self._log_append("Analysis is running, please wait...\n")
+            return
         self._log_clear()
         self._log_append("Analyzing, please wait...\n")
         thread = threading.Thread(target=self._run_analysis, daemon=True)
@@ -445,17 +472,17 @@ class ChanApp(tk.Tk):
 
     def _run_analysis(self) -> None:
         """Run full analysis in background, then update UI."""
+        if self._analysis_running:
+            return
+        self._analysis_running = True
         try:
             ticker = self._ticker_var.get().strip().upper()
             interval_label = self._interval_label_var.get().strip()
             interval = _INTERVAL_OPTIONS.get(interval_label, "1d")
             use_offline = self._offline_var.get()
-            enable_diag = self._diag_var.get()
-            diag_date_text = self._diag_date_var.get().strip()
+            realtime_mode = self._realtime_var.get()
             display_denoise_label = self._display_denoise_var.get().strip()
-            display_near_gap = _DISPLAY_DENOISE_OPTIONS.get(display_denoise_label, 1)
-            source_label = self._source_var.get().strip()
-            source_tag = _SOURCE_OPTIONS.get(source_label, "auto")
+            display_near_gap = _DISPLAY_DENOISE_OPTIONS.get(display_denoise_label, 2)
             use_attachment = self._use_attachment_var.get()
             attachment_path = self._attachment_path_var.get().strip()
             show_fractal_tops = self._show_top_var.get()
@@ -490,18 +517,10 @@ class ChanApp(tk.Tk):
             if runtime_cfg.zhongshu_level not in {"bi", "segment"}:
                 raise ValueError("Zhongshu level must be 'bi' or 'segment'")
 
-            diag_target: pd.Timestamp | None = None
-            if enable_diag:
-                if not diag_date_text:
-                    raise ValueError("Diagnostic mode enabled: please input diagnostic date (YYYY-MM-DD)")
-                try:
-                    diag_target = pd.Timestamp(diag_date_text)
-                except Exception as exc:  # noqa: BLE001
-                    raise ValueError("Diagnostic date format must be YYYY-MM-DD") from exc
-
             self._log_append(
                 f"Fetching data: {ticker}  interval={interval_label}({interval})"
                 f"  bars={num_periods}"
+                f"  realtime={'on' if realtime_mode else 'off'}"
                 f"  min_bi_sep={runtime_cfg.min_bi_separation}"
                 f"  zh_level={runtime_cfg.zhongshu_level}"
                 f"  display_near_gap={runtime_cfg.display_near_gap}"
@@ -518,15 +537,32 @@ class ChanApp(tk.Tk):
                 self._log_append(f"Attachment: {attachment_path}\n")
                 df = _load_ohlcv_from_attachment(attachment_path, num_periods=num_periods)
             else:
-                self._log_append(f"Data source: {source_tag}\n")
-                df = fetch_ohlcv_cached(
-                    ticker,
-                    interval,
-                    num_periods=num_periods,
-                    use_offline_data=use_offline,
-                    force_refresh=False,
-                    source=source_tag,
-                )
+                self._log_append("Data source: TDX (Tongdaxin)\n")
+                if realtime_mode and not use_offline:
+                    self._refresh_realtime_kline_cache(ticker=ticker, interval=interval)
+
+                if realtime_mode and interval == "30m" and not use_offline:
+                    # TDX refresh_kline 不支持 30m，实时模式改为 5m 拉取后本地聚合 30m。
+                    bars_5m = max(num_periods * 6 + 30, 180)
+                    df_5m = fetch_ohlcv_cached(
+                        ticker,
+                        "5m",
+                        num_periods=bars_5m,
+                        use_offline_data=False,
+                        force_refresh=True,
+                    )
+                    df = _resample_ohlcv(df_5m, "30min", num_periods)
+                    self._log_append(
+                        f"Realtime 30m mode: fetched 5m({len(df_5m)}) and resampled to 30m({len(df)})\n"
+                    )
+                else:
+                    df = fetch_ohlcv_cached(
+                        ticker,
+                        interval,
+                        num_periods=num_periods,
+                        use_offline_data=use_offline,
+                        force_refresh=True,  # 强制刷新数据
+                    )
             self._log_append(f"Rows: {len(df)}\n")
 
             # K-line merge
@@ -584,18 +620,6 @@ class ChanApp(tk.Tk):
                 f" / for_bi: {len(fractals_for_bi)}\n"
             )
 
-            if enable_diag and diag_target is not None:
-                diag_msg = diagnose_fractal_bar(
-                    original_df=df,
-                    merge_result=merge_result,
-                    raw_fractals_merged=raw,
-                    clustered_fractals_merged=fractals_all_merged,
-                    mapped_fractals_original=fractals_for_plot,
-                    target_datetime=diag_target,
-                    allow_equal=runtime_cfg.fractal_allow_equal,
-                )
-                self._log_append(diag_msg + "\n")
-
             if assessed:
                 strong_n = sum(1 for x in assessed if x.strength_level == "strong")
                 reversal_n = sum(1 for x in assessed if x.structure_label == "reversal")
@@ -647,6 +671,9 @@ class ChanApp(tk.Tk):
                     show_zhongshu=show_zhongshu,
                     show_pens=show_pens,
                     show_segments=show_segments,
+                    realtime_mode=realtime_mode,
+                    use_attachment=use_attachment,
+                    use_offline=use_offline,
                 ),
             )
 
@@ -655,6 +682,9 @@ class ChanApp(tk.Tk):
             err_msg = str(exc)
             self.after(0, lambda m=err_msg: self._log_append(f"Error: {m}\n"))
             self.after(0, lambda m=err_msg: messagebox.showerror("Error", m))
+        finally:
+            self._analysis_running = False
+            self._rt_refresh_pending = False
 
     def _on_save(self) -> None:
         """Save current chart to PNG."""
@@ -676,6 +706,11 @@ class ChanApp(tk.Tk):
         if self._closing:
             return
         self._closing = True
+
+        try:
+            self._stop_realtime_subscription()
+        except Exception:
+            pass
 
         try:
             if self._canvas is not None and self._hover_cid is not None:
@@ -723,6 +758,9 @@ class ChanApp(tk.Tk):
         show_zhongshu,
         show_pens,
         show_segments,
+        realtime_mode,
+        use_attachment,
+        use_offline,
     ) -> None:
         """在主线程渲染图表并刷新 UI。"""
         self._current_df = df
@@ -759,6 +797,12 @@ class ChanApp(tk.Tk):
         self._update_chart(fig)
         self._update_summary(buys, sells, zhongshus, segments)
         self._set_bar_info_text("Hover on a bar to inspect attributes.")
+
+        if realtime_mode and not use_attachment and not use_offline:
+            self._start_realtime_subscription(ticker)
+        else:
+            self._stop_realtime_subscription()
+
         self._log_append("Analysis completed.\n")
 
     # ─── UI 更新（主线程） ──────────────────────────────────────────────────
@@ -789,6 +833,121 @@ class ChanApp(tk.Tk):
         self._canvas = canvas
         self._toolbar_frame = toolbar_frame
         self._hover_cid = canvas.mpl_connect("motion_notify_event", self._on_chart_hover)
+        widget.bind("<Enter>", self._on_chart_enter)
+        widget.bind("<Leave>", self._on_chart_leave)
+
+    def _on_chart_enter(self, _event) -> None:
+        self._mouse_in_chart = True
+
+    def _on_chart_leave(self, _event) -> None:
+        self._mouse_in_chart = False
+
+    def _on_key_up(self, _event) -> None:
+        if not self._mouse_in_chart:
+            return
+        self._adjust_bars_and_refresh(-20)
+
+    def _on_key_down(self, _event) -> None:
+        if not self._mouse_in_chart:
+            return
+        self._adjust_bars_and_refresh(20)
+
+    def _adjust_bars_and_refresh(self, delta: int) -> None:
+        try:
+            current = int(self._periods_var.get().strip())
+        except ValueError:
+            current = DEFAULT_NUM_PERIODS
+        new_value = max(20, current + delta)
+        self._periods_var.set(str(new_value))
+        self._log_append(f"Bars changed: {current} -> {new_value}\n")
+        self._on_run()
+
+    def _start_realtime_subscription(self, ticker: str) -> None:
+        normalized = _normalize_ticker_for_tdx(ticker)
+        if not normalized:
+            self._log_append("Realtime subscription skipped: empty ticker.\n")
+            return
+        if self._rt_active and self._rt_ticker == normalized:
+            return
+        self._stop_realtime_subscription()
+        try:
+            from tdxref.tqcenter import tq as _tq_mod  # type: ignore
+
+            def _callback(data_str) -> None:
+                if self._closing:
+                    return
+                self.after(0, lambda d=data_str: self._on_realtime_tick(d))
+
+            self._rt_callback = _callback
+            _tq_mod.subscribe_hq(stock_list=[normalized], callback=_callback)
+            self._rt_active = True
+            self._rt_ticker = normalized
+            self._log_append(f"Realtime subscribed: {normalized}\n")
+        except Exception as exc:  # noqa: BLE001
+            self._rt_active = False
+            self._rt_ticker = ""
+            self._rt_callback = None
+            self._log_append(f"Realtime subscribe failed: {exc}\n")
+
+    def _stop_realtime_subscription(self) -> None:
+        if not self._rt_active or not self._rt_ticker:
+            self._rt_active = False
+            self._rt_ticker = ""
+            self._rt_callback = None
+            return
+        try:
+            from tdxref.tqcenter import tq as _tq_mod  # type: ignore
+
+            _tq_mod.unsubscribe_hq(stock_list=[self._rt_ticker])
+            self._log_append(f"Realtime unsubscribed: {self._rt_ticker}\n")
+        except Exception as exc:  # noqa: BLE001
+            self._log_append(f"Realtime unsubscribe warning: {exc}\n")
+        finally:
+            self._rt_active = False
+            self._rt_ticker = ""
+            self._rt_callback = None
+
+    def _on_realtime_tick(self, _data_str) -> None:
+        if not self._rt_active or self._closing:
+            return
+        now = time.monotonic()
+        if now - self._rt_last_refresh_ts < 1.0:
+            return
+        if self._analysis_running or self._rt_refresh_pending:
+            return
+
+        self._rt_last_refresh_ts = now
+        self._rt_refresh_pending = True
+        self._log_append("Realtime tick received, refreshing chart...\n")
+        thread = threading.Thread(target=self._run_analysis, daemon=True)
+        thread.start()
+
+    def _refresh_realtime_kline_cache(self, ticker: str, interval: str) -> None:
+        """Refresh TDX cache before realtime re-analysis."""
+        normalized = _normalize_ticker_for_tdx(ticker)
+        if not normalized:
+            return
+
+        period = ""
+        iv = (interval or "").lower()
+        if iv == "5m":
+            period = "5m"
+        elif iv == "30m":
+            period = "5m"
+        elif iv == "1d":
+            period = "1d"
+
+        if not period:
+            return
+
+        try:
+            from tdxref.tqcenter import tq as _tq_mod  # type: ignore
+
+            _tq_mod.refresh_kline(stock_list=[normalized], period=period)
+            if iv == "30m":
+                self._log_append("Realtime cache refresh: using 5m source for 30m aggregation.\n")
+        except Exception as exc:  # noqa: BLE001
+            self._log_append(f"Realtime cache refresh warning: {exc}\n")
 
     def _on_chart_hover(self, event) -> None:
         """Update bar info when hovering on the chart."""

@@ -27,6 +27,7 @@ class Pen:
     low: float
     start_ftype: str = ""
     end_ftype: str = ""
+    is_complete: bool = True
 
     @property
     def direction(self) -> str:

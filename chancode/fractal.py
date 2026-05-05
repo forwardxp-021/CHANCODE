@@ -333,9 +333,18 @@ def cluster_fractals_for_display(
                 clustered[-1] = f
             continue
 
-        # 异类分型过近时优先保留后者，减少一根K线内来回翻转的噪声。
+        # 异类分型过近时，不能无条件替换。
+        # 仅当“前一个同类型分型”可被当前分型替换为更极端点时，
+        # 才删除中间分型，避免误吞掉真正拐点。
         if (f.idx - last.idx) < near_gap:
-            clustered[-1] = f
+            if len(clustered) >= 2 and clustered[-2].ftype == f.ftype:
+                prev_same = clustered[-2]
+                if _is_more_extreme(f, prev_same) or (
+                    (f.ftype == "top" and f.high == prev_same.high)
+                    or (f.ftype == "bottom" and f.low == prev_same.low)
+                ):
+                    clustered[-2] = f
+                    clustered.pop()
             continue
 
         clustered.append(f)
@@ -404,9 +413,12 @@ def build_fractals_for_bi(
 
         if len(compact) >= 2 and compact[-2].ftype == f.ftype:
             prev_same = compact[-2]
-            if _is_more_extreme(f, prev_same):
+            if _is_more_extreme(f, prev_same) or (
+                (f.ftype == "top" and f.high == prev_same.high)
+                or (f.ftype == "bottom" and f.low == prev_same.low)
+            ):
                 compact[-2] = f
-            compact.pop()  # 删除中间的噪声反向分型
+                compact.pop()  # 仅在可替换时删除中间噪声反向分型
         else:
             # 序列开头出现过密反向分型时，保留后者可提升后续成笔概率。
             compact[-1] = f

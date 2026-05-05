@@ -1,7 +1,7 @@
-"""Demo script that reuses chancode core logic.
+"""Demo script that reuses chancode core logic (TDX by default).
 
 Example:
-    python chan_theory_yfinance.py --ticker AAPL --period 1y --interval 1d --out result.png
+    python chan_theory_yfinance.py --ticker 601800 --period 1y --interval 1d --out result.png
 """
 from __future__ import annotations
 
@@ -25,9 +25,9 @@ from chancode.chart import plot_chan
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Chan theory demo (reuse chancode core modules)")
-    parser.add_argument("--ticker", type=str, default="601800", help="Ticker symbol")
-    parser.add_argument("--period", type=str, default="1y", help="Download period, e.g. 1y / 6mo")
-    parser.add_argument("--interval", type=str, default="1d", help="Bar interval, e.g. 1d / 1h")
+    parser.add_argument("--ticker", type=str, default="601800", help="Ticker symbol (e.g. 600000/600000.SH)")
+    parser.add_argument("--period", type=str, default="1y", help="Approx period (used to infer bar count)")
+    parser.add_argument("--interval", type=str, default="1d", help="Bar interval, e.g. 1d / 30m / 5m / 1wk")
     parser.add_argument("--out", type=str, default=None, help="Output chart path")
     parser.add_argument("--demo", action="store_true", help="Use built-in demo data")
     parser.add_argument("--config", type=str, default=None, help="YAML config path")

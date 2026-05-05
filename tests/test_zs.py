@@ -105,3 +105,53 @@ def test_zhongshu_level_switches_input_path():
 
     assert len(zss_bi) == 0
     assert len(zss_seg) == 1
+
+
+def test_zhongshu_exit_then_return_extends():
+    # 离开一次后回抽重叠，应继续延伸而不终结。
+    pens = [
+        _pen(0, 7, 5, 15, up=True),
+        _pen(7, 14, 6, 14, up=False),
+        _pen(14, 21, 7, 13, up=True),
+        _pen(21, 28, 8, 16, up=False),  # 扩展
+        _pen(28, 35, 21, 30, up=True),  # 第一次离开
+        _pen(35, 42, 8, 18, up=False),  # 回抽重叠
+    ]
+
+    zss = detect_zhongshu_with_basis(pens, level="bi")
+    assert len(zss) == 1
+    zh = zss[0]
+    assert zh.end_idx == pens[5].end_idx
+    assert zh.terminated_idx is None
+
+
+def test_zhongshu_exit_then_fail_to_return_terminates():
+    # 连续两笔都不回到核心区，第二笔确认终结。
+    pens = [
+        _pen(0, 7, 5, 15, up=True),
+        _pen(7, 14, 6, 14, up=False),
+        _pen(14, 21, 7, 13, up=True),
+        _pen(21, 28, 8, 16, up=False),  # 扩展
+        _pen(28, 35, 21, 30, up=True),  # 第一次离开
+        _pen(35, 42, 18, 25, up=False),  # 仍不回抽
+    ]
+
+    zss = detect_zhongshu_with_basis(pens, level="bi")
+    assert len(zss) == 1
+    zh = zss[0]
+    assert zh.end_idx == pens[3].end_idx  # 停留在最后重叠笔
+    assert zh.terminated_idx == pens[4].end_idx
+    assert zh.terminated_reason == "leave_no_reentry"
+
+
+def test_zhongshu_requires_first_three_units_completed():
+    # 8.3: 前三个连续次级走势未全部完成时，不应构成中枢。
+    pens = [
+        _pen(0, 7, 5, 15, up=True),
+        _pen(7, 14, 6, 14, up=False),
+        _pen(14, 21, 7, 13, up=True),
+    ]
+    pens[2].is_complete = False
+
+    zss = detect_zhongshu_with_basis(pens, level="bi")
+    assert len(zss) == 0
